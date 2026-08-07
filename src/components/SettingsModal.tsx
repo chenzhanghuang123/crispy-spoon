@@ -11,6 +11,8 @@ import {
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
   DEFAULT_LINAPI_BASE_URL,
+  DEFAULT_LINAPI_GPT_BASE_URL,
+  DEFAULT_LINAPI_GPT_MODEL,
   DEFAULT_LINAPI_MODEL,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
@@ -54,7 +56,8 @@ const LEGACY_DEFAULT_CHAT_MODEL = 'deepseek-v4-flash'
 const DEEPSEEK_PLANNER_NOTICE = '当前 AI 策划配置为 DeepSeek 官方接口。DeepSeek 策划阶段不会读取参考图，系统会仅用 Listing 文本和你填写的商品信息生成策划；参考图仍会在正式生图时随生图请求发送。请把产品颜色、形状、结构、配件、Logo、套装数量等关键特征写进 Listing 或商品信息中。'
 const QUICK_IMAGE_PRESETS = [
   { provider: 'openai', label: 'OpenAI 生图' },
-  { provider: 'linapi', label: 'LinAPI 生图' },
+  { provider: 'linapi-gpt', label: 'LinAPI GPT 生图' },
+  { provider: 'linapi', label: 'LinAPI Gemini 生图' },
   { provider: 'fal', label: 'fal.ai 生图' },
 ] as const
 
@@ -359,13 +362,14 @@ export default function SettingsModal() {
   const activeProviderIsOpenAICompatible = isOpenAICompatibleProvider(draft, activeProfile.provider)
   const activeProviderUsesApiUrl = activeProviderIsOpenAICompatible || activeProfile.provider === 'fal' || activeProfile.provider === 'linapi'
   const activeCustomProvider = draft.customProviders.find((provider) => provider.id === activeProfile.provider)
-  const defaultProviderOrder = ['openai', 'linapi', 'fal', ...draft.customProviders.map(p => p.id)]
+  const defaultProviderOrder = ['openai', 'linapi-gpt', 'linapi', 'fal', ...draft.customProviders.map(p => p.id)]
   const providerOrder = draft.providerOrder
     ? [...draft.providerOrder, ...defaultProviderOrder.filter((provider) => !draft.providerOrder?.includes(provider))]
     : defaultProviderOrder
 
   const unorderedProviderOptions = [
     { label: 'OpenAI 兼容接口', value: 'openai', draggable: true },
+    { label: 'LinAPI GPT Image', value: 'linapi-gpt', draggable: true },
     { label: 'LinAPI Gemini 生图', value: 'linapi', draggable: true },
     { label: 'fal.ai', value: 'fal', draggable: true },
     ...draft.customProviders.map((provider) => ({
@@ -543,11 +547,15 @@ export default function SettingsModal() {
         ? profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
         : profile.provider === 'linapi'
           ? profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_BASE_URL
+          : profile.provider === 'linapi-gpt'
+            ? profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_GPT_BASE_URL
           : normalizeBaseUrl(profile.baseUrl.trim() || DEFAULT_SETTINGS.baseUrl)
       const defaultModel = profile.provider === 'fal'
         ? DEFAULT_FAL_MODEL
         : profile.provider === 'linapi'
           ? DEFAULT_LINAPI_MODEL
+          : profile.provider === 'linapi-gpt'
+            ? DEFAULT_LINAPI_GPT_MODEL
           : getDefaultModelForMode(profile.apiMode)
       return {
         ...profile,
@@ -737,6 +745,8 @@ export default function SettingsModal() {
     const switchedProfile = switchApiProfileProvider(sourceProfile, provider)
     const providerDefaults = provider === 'linapi'
       ? { baseUrl: DEFAULT_LINAPI_BASE_URL, model: DEFAULT_LINAPI_MODEL }
+      : provider === 'linapi-gpt'
+        ? { baseUrl: DEFAULT_LINAPI_GPT_BASE_URL, model: DEFAULT_LINAPI_GPT_MODEL }
       : provider === 'fal'
         ? { baseUrl: DEFAULT_FAL_BASE_URL, model: DEFAULT_FAL_MODEL }
         : { baseUrl: DEFAULT_SETTINGS.baseUrl, model: DEFAULT_IMAGES_MODEL }
@@ -746,10 +756,10 @@ export default function SettingsModal() {
       name: createSeparateImageProfile ? preset.label : activeProfile.name,
       provider,
       apiKey: preserveApiKey ? activeProfile.apiKey : '',
-      apiMode: 'images',
+      apiMode: provider === 'linapi-gpt' ? 'chat' : 'images',
       codexCli: false,
       apiProxy: provider === 'openai' ? apiProxyLocked : false,
-      responseFormatB64Json: undefined,
+      responseFormatB64Json: provider === 'linapi-gpt' ? switchedProfile.responseFormatB64Json : undefined,
       ...providerDefaults,
     }
     const nextProfiles = createSeparateImageProfile
@@ -1061,7 +1071,7 @@ export default function SettingsModal() {
   }
 
   const handleProviderReorder = (sourceValue: string | number, targetValue: string | number, position: 'before' | 'after' | null) => {
-    const defaultOrder = ['openai', 'linapi', 'fal', ...draft.customProviders.map(p => p.id)]
+    const defaultOrder = ['openai', 'linapi-gpt', 'linapi', 'fal', ...draft.customProviders.map(p => p.id)]
     const currentOrder = draft.providerOrder
       ? [...draft.providerOrder, ...defaultOrder.filter((provider) => !draft.providerOrder?.includes(provider))]
       : defaultOrder
@@ -1874,6 +1884,8 @@ export default function SettingsModal() {
                       ? DEFAULT_FAL_BASE_URL
                       : activeProfile.provider === 'linapi'
                         ? DEFAULT_LINAPI_BASE_URL
+                        : activeProfile.provider === 'linapi-gpt'
+                          ? DEFAULT_LINAPI_GPT_BASE_URL
                         : DEFAULT_SETTINGS.baseUrl}
                     className={`ios-field w-full px-3 py-2.5 text-sm ${apiProxyEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                   />
@@ -1884,6 +1896,8 @@ export default function SettingsModal() {
                       <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_FAL_BASE_URL}</code>；填写自定义地址时将作为 fal.ai 代理 URL。</span>
                     ) : activeProfile.provider === 'linapi' ? (
                       <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_LINAPI_BASE_URL}</code>，无需填写 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/v1beta/models</code>。</span>
+                    ) : activeProfile.provider === 'linapi-gpt' ? (
+                      <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_LINAPI_GPT_BASE_URL}</code>，应用会自动追加 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/chat/completions</code>。</span>
                     ) : (
                       <span>支持通过查询参数覆盖：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiUrl=</code></span>
                     )}
@@ -1925,7 +1939,7 @@ export default function SettingsModal() {
                     onChange={(e) => updateActiveProfile({ apiKey: e.target.value })}
                     onBlur={(e) => commitActiveProfilePatch({ apiKey: e.target.value })}
                     type={showApiKey ? 'text' : 'password'}
-                    placeholder={activeProfile.provider === 'fal' ? 'FAL_KEY' : activeProfile.provider === 'linapi' ? 'LinAPI API Key' : 'sk-...'}
+                    placeholder={activeProfile.provider === 'fal' ? 'FAL_KEY' : activeProfile.provider === 'linapi' || activeProfile.provider === 'linapi-gpt' ? 'LinAPI API Key' : 'sk-...'}
                     className="ios-field w-full px-3 py-2.5 pr-10 text-sm"
                   />
                   <button
@@ -1995,6 +2009,8 @@ export default function SettingsModal() {
                     ? DEFAULT_FAL_MODEL
                     : activeProfile.provider === 'linapi'
                       ? DEFAULT_LINAPI_MODEL
+                      : activeProfile.provider === 'linapi-gpt'
+                        ? DEFAULT_LINAPI_GPT_MODEL
                       : getDefaultModelForMode(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode)}
                   className="ios-field w-full px-3 py-2.5 text-sm"
                 />
@@ -2003,6 +2019,8 @@ export default function SettingsModal() {
                     <>当前适配 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_FAL_MODEL}</code>。</>
                   ) : activeProfile.provider === 'linapi' ? (
                     <>支持 Gemini 3 Pro Image Preview 与 Gemini 3.1 Flash Image Preview；工作台会按尺寸自动切换 1K / 2K / 4K 模型后缀。</>
+                  ) : activeProfile.provider === 'linapi-gpt' ? (
+                    <>通过 Chat Completions 调用 GPT Image，默认模型 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_LINAPI_GPT_MODEL}</code>；横图、竖图和方图会自动映射为兼容尺寸。</>
                   ) : activeCustomProvider ? (
                     <>当前使用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{activeCustomProvider.name}</code>。</>
                   ) : (activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode) === 'responses' ? (

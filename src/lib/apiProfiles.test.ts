@@ -4,6 +4,8 @@ import {
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
   DEFAULT_LINAPI_BASE_URL,
+  DEFAULT_LINAPI_GPT_BASE_URL,
+  DEFAULT_LINAPI_GPT_MODEL,
   DEFAULT_LINAPI_MODEL,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_AMAZON_PLANNER_PROFILE_ID,
@@ -14,6 +16,7 @@ import {
   createDefaultOpenAIProfile,
   createDefaultFalProfile,
   createDefaultLinApiProfile,
+  createDefaultLinApiGptProfile,
   findEquivalentApiProfile,
   getAmazonPlannerProfile,
   getVisibleApiProfiles,
@@ -759,6 +762,46 @@ describe('custom providers', () => {
       baseUrl: DEFAULT_LINAPI_BASE_URL,
       model: DEFAULT_LINAPI_MODEL,
       apiMode: 'images',
+    })
+  })
+
+  it('preserves LinAPI GPT as a built-in chat image provider and restores its provider draft', () => {
+    const openaiProfile = createDefaultOpenAIProfile({
+      baseUrl: 'https://api.compat.example.com/v1',
+      model: 'custom-openai-model',
+    })
+    const linApiGptProfile = switchApiProfileProvider(openaiProfile, 'linapi-gpt')
+    expect(linApiGptProfile).toMatchObject({
+      provider: 'linapi-gpt',
+      baseUrl: DEFAULT_LINAPI_GPT_BASE_URL,
+      model: DEFAULT_LINAPI_GPT_MODEL,
+      apiMode: 'chat',
+    })
+
+    const customized = {
+      ...linApiGptProfile,
+      model: 'gpt-image-2-custom',
+      responseFormatB64Json: true,
+    }
+    const restored = switchApiProfileProvider(
+      switchApiProfileProvider(customized, 'openai'),
+      'linapi-gpt',
+    )
+    expect(restored).toMatchObject({
+      model: 'gpt-image-2-custom',
+      responseFormatB64Json: true,
+      apiMode: 'chat',
+    })
+
+    const normalized = normalizeSettings({
+      profiles: [createDefaultLinApiGptProfile({ id: 'linapi-gpt-profile', apiMode: 'images' })],
+      activeProfileId: 'linapi-gpt-profile',
+    })
+    expect(normalized.profiles[0]).toMatchObject({
+      provider: 'linapi-gpt',
+      baseUrl: DEFAULT_LINAPI_GPT_BASE_URL,
+      model: DEFAULT_LINAPI_GPT_MODEL,
+      apiMode: 'chat',
     })
   })
 })

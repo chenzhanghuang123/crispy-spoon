@@ -28,11 +28,13 @@ export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_LINAPI_BASE_URL = 'https://api.linapi.net'
 export const DEFAULT_LINAPI_MODEL = 'gemini-3-pro-image-preview'
+export const DEFAULT_LINAPI_GPT_BASE_URL = 'https://www.linapi.net/v1'
+export const DEFAULT_LINAPI_GPT_MODEL = 'gpt-image-2-4K'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_AMAZON_PLANNER_PROFILE_ID = 'default-openai-planner'
 export const DEFAULT_API_TIMEOUT = 600
 
-const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal', 'linapi'])
+const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal', 'linapi', 'linapi-gpt'])
 const DEFAULT_CUSTOM_PROVIDER_PATHS = {
   generationPath: 'images/generations',
   editPath: 'images/edits',
@@ -360,6 +362,24 @@ export function createDefaultLinApiProfile(overrides: Partial<ApiProfile> = {}):
   }
 }
 
+export function createDefaultLinApiGptProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
+  return {
+    id: `linapi-gpt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    name: 'LinAPI GPT 生图',
+    provider: 'linapi-gpt',
+    baseUrl: DEFAULT_LINAPI_GPT_BASE_URL,
+    apiKey: '',
+    model: DEFAULT_LINAPI_GPT_MODEL,
+    timeout: DEFAULT_API_TIMEOUT,
+    apiMode: 'chat',
+    codexCli: false,
+    apiProxy: false,
+    ...overrides,
+    streamImages: false,
+    streamPartialImages: DEFAULT_STREAM_PARTIAL_IMAGES,
+  }
+}
+
 export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvider, customProvider?: CustomProviderDefinition): ApiProfile {
   const providerDrafts = {
     ...profile.providerDrafts,
@@ -408,8 +428,24 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     }
   }
 
+  if (provider === 'linapi-gpt') {
+    return {
+      ...profile,
+      provider,
+      baseUrl: savedDraft?.baseUrl ?? DEFAULT_LINAPI_GPT_BASE_URL,
+      model: savedDraft?.model ?? DEFAULT_LINAPI_GPT_MODEL,
+      apiMode: 'chat',
+      codexCli: false,
+      apiProxy: false,
+      responseFormatB64Json: savedDraft?.responseFormatB64Json,
+      streamImages: false,
+      streamPartialImages: DEFAULT_STREAM_PARTIAL_IMAGES,
+      providerDrafts,
+    }
+  }
+
   if (customProvider) {
-    const shouldUseOpenAIDefaults = profile.provider === 'fal' || profile.provider === 'linapi'
+    const shouldUseOpenAIDefaults = profile.provider === 'fal' || profile.provider === 'linapi' || profile.provider === 'linapi-gpt'
     return {
       ...profile,
       provider: customProvider.id,
@@ -446,11 +482,13 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
     ? createDefaultFalProfile()
     : provider === 'linapi'
       ? createDefaultLinApiProfile()
+      : provider === 'linapi-gpt'
+        ? createDefaultLinApiGptProfile()
       : createDefaultOpenAIProfile()
   const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl : undefined
   const model = typeof input.model === 'string' && input.model.trim() ? input.model : undefined
   const apiMode = input.apiMode === 'responses' || input.apiMode === 'chat' ? input.apiMode : input.apiMode === 'images' ? 'images' : undefined
-  const knownProvider = provider === 'fal' || provider === 'linapi' || provider === 'openai' || customProviderIds.has(provider)
+  const knownProvider = provider === 'fal' || provider === 'linapi' || provider === 'linapi-gpt' || provider === 'openai' || customProviderIds.has(provider)
   if (!knownProvider) return undefined
 
   return {
@@ -458,6 +496,8 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
       ? baseUrl?.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
       : provider === 'linapi'
         ? baseUrl?.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_BASE_URL
+        : provider === 'linapi-gpt'
+          ? baseUrl?.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_GPT_BASE_URL
         : baseUrl,
     model,
     apiMode,
@@ -613,7 +653,7 @@ export function isOpenRouterImageGenerationProfile(profile: Pick<ApiProfile, 'pr
 }
 
 export function canApiProfileGenerateImages(profile: Pick<ApiProfile, 'provider' | 'baseUrl' | 'apiMode'>): boolean {
-  return profile.apiMode === 'images' || isOpenRouterImageGenerationProfile(profile)
+  return profile.apiMode === 'images' || profile.provider === 'linapi-gpt' || isOpenRouterImageGenerationProfile(profile)
 }
 
 function resolveAmazonPlannerProfileId(profiles: ApiProfile[], value: unknown): string {
@@ -738,14 +778,18 @@ function normalizeDefaultProfileSet(
 export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfile>, customProviderIds = new Set<string>()): ApiProfile {
   const record = input && typeof input === 'object' ? input as Record<string, unknown> : {}
   const rawProvider = typeof record.provider === 'string' ? record.provider : ''
-  const provider: ApiProvider = rawProvider === 'fal' || rawProvider === 'linapi' || customProviderIds.has(rawProvider) ? rawProvider : 'openai'
+  const provider: ApiProvider = rawProvider === 'fal' || rawProvider === 'linapi' || rawProvider === 'linapi-gpt' || customProviderIds.has(rawProvider) ? rawProvider : 'openai'
   const defaults = provider === 'fal'
     ? createDefaultFalProfile(fallback)
     : provider === 'linapi'
       ? createDefaultLinApiProfile(fallback)
+      : provider === 'linapi-gpt'
+        ? createDefaultLinApiGptProfile(fallback)
       : createDefaultOpenAIProfile(fallback)
   const apiMode: ApiMode = provider === 'linapi'
     ? 'images'
+    : provider === 'linapi-gpt'
+      ? 'chat'
     : record.apiMode === 'responses' || record.apiMode === 'chat'
       ? record.apiMode
       : 'images'
@@ -760,6 +804,8 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
       ? rawBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
       : provider === 'linapi'
         ? rawBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_BASE_URL
+        : provider === 'linapi-gpt'
+          ? rawBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_GPT_BASE_URL
         : rawBaseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
     model: typeof record.model === 'string' && record.model.trim() ? record.model : defaults.model,
@@ -872,6 +918,7 @@ export function getCustomProviderDefinition(settings: Partial<AppSettings> | unk
 export function getApiProviderLabel(settings: Partial<AppSettings> | unknown, provider: ApiProvider): string {
   if (provider === 'fal') return 'fal.ai'
   if (provider === 'linapi') return 'LinAPI Gemini'
+  if (provider === 'linapi-gpt') return 'LinAPI GPT Image'
   if (provider === 'openai') return 'OpenAI'
   return getCustomProviderDefinition(settings, provider)?.name ?? provider
 }
@@ -886,7 +933,7 @@ export function getVisibleApiProfiles(settings: Partial<AppSettings> | unknown):
 }
 
 export function isOpenAICompatibleProvider(settings: Partial<AppSettings> | unknown, provider: ApiProvider): boolean {
-  return provider === 'openai' || Boolean(getCustomProviderDefinition(settings, provider))
+  return provider === 'openai' || provider === 'linapi-gpt' || Boolean(getCustomProviderDefinition(settings, provider))
 }
 
 export interface ImportedProviderSettings {
