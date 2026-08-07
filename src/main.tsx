@@ -1,11 +1,13 @@
 import 'core-js/actual/array/at'
-import { StrictMode } from 'react'
+import { lazy, StrictMode, Suspense } from 'react'
 import { createRoot } from 'react-dom/client'
-import App from './App'
+import AccessGate from './components/AccessGate'
 import 'streamdown/styles.css'
 import './index.css'
 import { installMobileViewportGuards } from './lib/viewport'
 import { requestPersistentBrowserStorage } from './lib/apiCredentialStorage'
+
+const App = lazy(() => import('./App'))
 
 document.documentElement.classList.add('dark')
 installMobileViewportGuards()
@@ -27,6 +29,10 @@ if ('serviceWorker' in navigator) {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <AccessGate>
+      <Suspense fallback={<div className="min-h-[100dvh] bg-[#080a0f]" />}>
+        <App />
+      </Suspense>
+    </AccessGate>
   </StrictMode>,
 )

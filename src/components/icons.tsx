@@ -171,6 +171,23 @@ export function EyeIcon(props: SVGProps<SVGSVGElement>) {
   )
 }
 
+export function EyeOffIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" {...props}>
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3l18 18M10.6 10.7a2 2 0 002.7 2.7M9.9 4.4A10.9 10.9 0 0112 4.2c6 0 9.75 6.75 9.75 6.75a18.8 18.8 0 01-2.1 3M6.3 6.4C3.7 8.2 2.25 11 2.25 11s3.75 6.75 9.75 6.75a9.9 9.9 0 004-.85" />
+    </svg>
+  )
+}
+
+export function LockIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" {...props}>
+      <rect x="5" y="10" width="14" height="10" rx="2" strokeWidth={2} />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10V7a4 4 0 118 0v3M12 14v2" />
+    </svg>
+  )
+}
+
 export function FavoriteIcon({ filled, ...props }: SVGProps<SVGSVGElement> & { filled?: boolean }) {
   return (
     <svg fill={filled ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24" {...props}>

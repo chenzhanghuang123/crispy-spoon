@@ -1,4 +1,4 @@
-const CACHE_NAME = 'czh-image-studio-v0.1.0-style-fix-1'
+const CACHE_NAME = 'czh-image-studio-v0.1.0-access-gate-1'
 const APP_SHELL = [
   './',
   './index.html',

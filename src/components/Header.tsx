@@ -3,8 +3,9 @@ import { useStore } from '../store'
 import { useTooltip } from '../hooks/useTooltip'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import ViewportTooltip from './ViewportTooltip'
-import { HelpCircleIcon, InstallIcon, SettingsIcon } from './icons'
+import { HelpCircleIcon, InstallIcon, LockIcon, SettingsIcon } from './icons'
 import { Button } from './Button'
+import { useAccessGate } from './AccessGate'
 
 const HelpModal = lazy(() => import('./HelpModal'))
 
@@ -26,6 +27,7 @@ function isInstalledPwa() {
 }
 
 export default function Header({ activePage, onPageChange }: HeaderProps) {
+  const { lock } = useAccessGate()
   const setShowSettings = useStore((s) => s.setShowSettings)
   const setConfirmDialog = useStore((s) => s.setConfirmDialog)
   const [showHelp, setShowHelp] = useState(false)
@@ -34,6 +36,7 @@ export default function Header({ activePage, onPageChange }: HeaderProps) {
 
   const installTooltip = useTooltip()
   const helpTooltip = useTooltip()
+  const lockTooltip = useTooltip()
   const settingsTooltip = useTooltip()
 
   useEffect(() => {
@@ -163,6 +166,26 @@ export default function Header({ activePage, onPageChange }: HeaderProps) {
               </Button>
               <ViewportTooltip visible={helpTooltip.visible} className="whitespace-nowrap">
                 操作指南
+              </ViewportTooltip>
+            </div>
+            <div
+              className="relative"
+              {...lockTooltip.handlers}
+            >
+              <Button
+                onClick={() => {
+                  dismissAllTooltips()
+                  lock()
+                }}
+                variant="plain"
+                size="icon"
+                className="text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100"
+                aria-label="锁定工作台"
+              >
+                <LockIcon className="h-5 w-5" />
+              </Button>
+              <ViewportTooltip visible={lockTooltip.visible} className="whitespace-nowrap">
+                锁定工作台
               </ViewportTooltip>
             </div>
             <div
