@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="glow" cx="30%" cy="15%" r="75%">
+      <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.9" />
+      <stop offset="42%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#020617" />
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="url(#glow)" />
+  <rect x="4" y="4" width="56" height="56" rx="15" fill="none" stroke="#f59e0b" stroke-opacity="0.35" />
+  <text x="32" y="39" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="800" letter-spacing="1.5" fill="#fff7ed">CZH</text>
+</svg>
