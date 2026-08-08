@@ -1,11 +1,12 @@
 import type { ApiProfile, TaskParams } from '../types'
 import { DEFAULT_LINAPI_GPT_BASE_URL, DEFAULT_LINAPI_GPT_MODEL } from './apiProfiles'
+import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './canvasImage'
 import {
   assertImageInputPayloadSize,
+  assertMaskEditFileSize,
   createLinkedAbortController,
   fetchImageUrlAsDataUrl,
   getApiErrorMessage,
-  getDataUrlDecodedByteSize,
   isDataUrl,
   isHttpUrl,
   MIME_MAP,
@@ -17,6 +18,10 @@ import {
 type ImageCandidate =
   | { kind: 'url', value: string }
   | { kind: 'base64', value: string }
+
+const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504])
+const DEFAULT_RETRY_DELAY_MS = 750
+const MAX_RETRY_DELAY_MS = 3000
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -34,20 +39,13 @@ export function getLinApiGptImageSize(size: string): '1024x1024' | '1536x1024' |
   return '1024x1024'
 }
 
-function getLinApiGptEndpoint(baseUrl: string): string {
+function getLinApiGptBaseUrl(baseUrl: string): string {
   const normalized = baseUrl.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_GPT_BASE_URL
-  return /\/chat\/completions$/i.test(normalized) ? normalized : `${normalized}/chat/completions`
+  return normalized.replace(/\/(?:chat\/completions|images\/generations|images\/edits)$/i, '')
 }
 
-function createMessageContent(prompt: string, inputImageDataUrls: string[]): unknown {
-  if (!inputImageDataUrls.length) return prompt
-  return [
-    { type: 'text', text: prompt },
-    ...inputImageDataUrls.map((dataUrl) => ({
-      type: 'image_url',
-      image_url: { url: dataUrl },
-    })),
-  ]
+function getLinApiGptEndpoint(baseUrl: string, path: 'images/generations' | 'images/edits'): string {
+  return `${getLinApiGptBaseUrl(baseUrl)}/${path}`
 }
 
 function addUrlCandidate(value: unknown, candidates: ImageCandidate[]) {
@@ -125,6 +123,22 @@ function collectImageCandidates(payload: unknown): ImageCandidate[] {
   })
 }
 
+function createNonJsonError(text: string): Error {
+  const snippet = text.trim().replace(/\s+/g, ' ').slice(0, 500)
+  const err = new Error(`LinAPI GPT 返回了非 JSON 响应，请稍后重试或检查服务商状态。${snippet ? `响应片段：${snippet}` : ''}`)
+  ;(err as Error & { rawResponsePayload?: string }).rawResponsePayload = text.slice(0, 5000)
+  return err
+}
+
+async function readLinApiGptJson(response: Response): Promise<unknown> {
+  const text = await response.text()
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw createNonJsonError(text)
+  }
+}
+
 async function parseLinApiGptResponse(
   payload: unknown,
   fallbackMime: string,
@@ -170,52 +184,121 @@ async function parseLinApiGptResponse(
   return { images, ...(rawImageUrls.length ? { rawImageUrls } : {}) }
 }
 
-export async function callLinApiGptImageApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
-  if (opts.maskDataUrl) {
-    throw new Error('LinAPI GPT 生图支持普通参考图编辑，但暂不支持独立遮罩编辑；请移除遮罩后重试。')
+function getRetryDelayMs(response: Response): number {
+  const retryAfter = Number(response.headers.get('retry-after') ?? '')
+  if (Number.isFinite(retryAfter) && retryAfter >= 0) return Math.min(retryAfter * 1000, MAX_RETRY_DELAY_MS)
+  return DEFAULT_RETRY_DELAY_MS
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+      return
+    }
+    const timer = setTimeout(resolve, ms)
+    signal.addEventListener('abort', () => {
+      clearTimeout(timer)
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+    }, { once: true })
+  })
+}
+
+async function fetchLinApiGptWithRetry(input: RequestInfo | URL, init: RequestInit, signal: AbortSignal): Promise<Response> {
+  let lastNetworkError: unknown
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(input, init)
+      if (response.ok || !RETRYABLE_STATUS_CODES.has(response.status) || attempt === 1) return response
+      await sleep(getRetryDelayMs(response), signal)
+    } catch (err) {
+      lastNetworkError = err
+      if (attempt === 1 || signal.aborted) throw err
+      await sleep(DEFAULT_RETRY_DELAY_MS, signal)
+    }
+  }
+  throw lastNetworkError instanceof Error ? lastNetworkError : new Error(String(lastNetworkError ?? 'LinAPI GPT 请求失败'))
+}
+
+async function createEditFormData(opts: CallApiOptions, profile: ApiProfile, requestSize: string, requestQuality: string, requestCount: number, responseFormat: string): Promise<FormData> {
+  const formData = new FormData()
+  formData.append('model', profile.model.trim() || DEFAULT_LINAPI_GPT_MODEL)
+  formData.append('prompt', opts.prompt)
+  formData.append('size', requestSize)
+  formData.append('quality', requestQuality)
+  formData.append('style', 'vivid')
+  formData.append('n', String(requestCount))
+  formData.append('response_format', responseFormat)
+
+  const imageBlobs: Blob[] = []
+  for (let i = 0; i < opts.inputImageDataUrls.length; i += 1) {
+    const dataUrl = opts.inputImageDataUrls[i]
+    const blob = opts.maskDataUrl && i === 0 ? await imageDataUrlToPngBlob(dataUrl) : await dataUrlToBlob(dataUrl)
+    imageBlobs.push(blob)
   }
 
-  assertImageInputPayloadSize(opts.inputImageDataUrls.reduce(
-    (total, dataUrl) => total + getDataUrlDecodedByteSize(dataUrl),
-    0,
-  ))
+  const maskBlob = opts.maskDataUrl ? await maskDataUrlToPngBlob(opts.maskDataUrl) : null
+  if (opts.maskDataUrl) {
+    assertMaskEditFileSize('遮罩主图文件', imageBlobs[0]?.size ?? 0)
+    assertMaskEditFileSize('遮罩文件', maskBlob?.size ?? 0)
+  }
+  assertImageInputPayloadSize(imageBlobs.reduce((sum, blob) => sum + blob.size, 0) + (maskBlob?.size ?? 0))
 
+  for (let i = 0; i < imageBlobs.length; i += 1) {
+    const blob = imageBlobs[i]
+    const ext = blob.type.split('/')[1] || 'png'
+    formData.append('image[]', blob, `input-${i + 1}.${ext}`)
+  }
+  if (maskBlob) formData.append('mask', maskBlob, 'mask.png')
+
+  return formData
+}
+
+export async function callLinApiGptImageApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const requestSize = getLinApiGptImageSize(opts.params.size)
   const requestQuality = opts.params.quality === 'high' ? 'hd' : 'standard'
   const requestCount = Math.min(10, Math.max(1, Math.trunc(opts.params.n || 1)))
   const responseFormat = profile.responseFormatB64Json ? 'b64_json' : 'url'
   const fallbackMime = MIME_MAP[opts.params.output_format] || 'image/png'
   const linkedAbort = createLinkedAbortController(profile.timeout, opts.signal)
+  const isEdit = opts.inputImageDataUrls.length > 0
 
   try {
-    const response = await fetch(getLinApiGptEndpoint(profile.baseUrl), {
-      method: 'POST',
-      signal: linkedAbort.controller.signal,
-      headers: {
-        Authorization: `Bearer ${profile.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      cache: 'no-store',
-      body: JSON.stringify({
-        model: profile.model.trim() || DEFAULT_LINAPI_GPT_MODEL,
-        messages: [{
-          role: 'user',
-          content: createMessageContent(opts.prompt, opts.inputImageDataUrls),
-        }],
-        temperature: 0.7,
-        size: requestSize,
-        quality: requestQuality,
-        style: 'vivid',
-        n: requestCount,
-        response_format: responseFormat,
-      }),
-    })
+    const endpoint = getLinApiGptEndpoint(profile.baseUrl, isEdit ? 'images/edits' : 'images/generations')
+    const requestInit: RequestInit = isEdit
+      ? {
+          method: 'POST',
+          signal: linkedAbort.controller.signal,
+          headers: { Authorization: `Bearer ${profile.apiKey}` },
+          cache: 'no-store',
+          body: await createEditFormData(opts, profile, requestSize, requestQuality, requestCount, responseFormat),
+        }
+      : {
+          method: 'POST',
+          signal: linkedAbort.controller.signal,
+          headers: {
+            Authorization: `Bearer ${profile.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          cache: 'no-store',
+          body: JSON.stringify({
+            model: profile.model.trim() || DEFAULT_LINAPI_GPT_MODEL,
+            prompt: opts.prompt,
+            size: requestSize,
+            quality: requestQuality,
+            style: 'vivid',
+            n: requestCount,
+            response_format: responseFormat,
+          }),
+        }
 
+    const response = await fetchLinApiGptWithRetry(endpoint, requestInit, linkedAbort.controller.signal)
     if (!response.ok) {
       throw new Error(`LinAPI GPT HTTP ${response.status}: ${await getApiErrorMessage(response)}`)
     }
 
-    const parsed = await parseLinApiGptResponse(await response.json(), fallbackMime, linkedAbort.controller.signal)
+    const parsed = await parseLinApiGptResponse(await readLinApiGptJson(response), fallbackMime, linkedAbort.controller.signal)
     const actualParams: Partial<TaskParams> = {
       size: requestSize,
       quality: requestQuality === 'hd' ? 'high' : opts.params.quality,

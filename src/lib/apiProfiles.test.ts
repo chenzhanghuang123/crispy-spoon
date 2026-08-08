@@ -765,7 +765,7 @@ describe('custom providers', () => {
     })
   })
 
-  it('preserves LinAPI GPT as a built-in chat image provider and restores its provider draft', () => {
+  it('preserves LinAPI GPT as a built-in Images API provider and restores its provider draft', () => {
     const openaiProfile = createDefaultOpenAIProfile({
       baseUrl: 'https://api.compat.example.com/v1',
       model: 'custom-openai-model',
@@ -775,7 +775,7 @@ describe('custom providers', () => {
       provider: 'linapi-gpt',
       baseUrl: DEFAULT_LINAPI_GPT_BASE_URL,
       model: DEFAULT_LINAPI_GPT_MODEL,
-      apiMode: 'chat',
+      apiMode: 'images',
     })
 
     const customized = {
@@ -790,18 +790,18 @@ describe('custom providers', () => {
     expect(restored).toMatchObject({
       model: 'gpt-image-2-custom',
       responseFormatB64Json: true,
-      apiMode: 'chat',
+      apiMode: 'images',
     })
 
     const normalized = normalizeSettings({
-      profiles: [createDefaultLinApiGptProfile({ id: 'linapi-gpt-profile', apiMode: 'images' })],
+      profiles: [createDefaultLinApiGptProfile({ id: 'linapi-gpt-profile', apiMode: 'chat' })],
       activeProfileId: 'linapi-gpt-profile',
     })
     expect(normalized.profiles[0]).toMatchObject({
       provider: 'linapi-gpt',
       baseUrl: DEFAULT_LINAPI_GPT_BASE_URL,
       model: DEFAULT_LINAPI_GPT_MODEL,
-      apiMode: 'chat',
+      apiMode: 'images',
     })
   })
 })

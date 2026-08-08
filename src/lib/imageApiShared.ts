@@ -205,23 +205,65 @@ export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, 
   return blobToDataUrl(blob, fallbackMime)
 }
 
+function stripHtmlErrorText(text: string): string {
+  return text
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function getJsonErrorMessage(errJson: unknown): string | null {
+  if (!errJson || typeof errJson !== 'object') return null
+  const record = errJson as Record<string, unknown>
+  const error = record.error
+  if (error && typeof error === 'object' && !Array.isArray(error)) {
+    const message = (error as Record<string, unknown>).message
+    if (typeof message === 'string' && message.trim()) return message
+  }
+  if (typeof record.detail === 'string' && record.detail.trim()) return record.detail
+  if (Array.isArray(record.detail)) {
+    return record.detail.map((item: unknown) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n')
+  }
+  if (typeof record.error === 'string' && record.error.trim()) return record.error
+  if (typeof record.message === 'string' && record.message.trim()) return record.message
+  if (typeof record.title === 'string' && record.title.trim()) return record.title
+  return null
+}
+
 export async function getApiErrorMessage(response: Response): Promise<string> {
   let errorMsg = `HTTP ${response.status}`
+  let text = ''
   try {
-    const errJson = await response.json()
-    if (errJson.error?.message) errorMsg = errJson.error.message
-    else if (typeof errJson.detail === 'string') errorMsg = errJson.detail
-    else if (Array.isArray(errJson.detail)) errorMsg = errJson.detail.map((item: unknown) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n')
-    else if (typeof errJson.error === 'string') errorMsg = errJson.error
-    else if (errJson.message) errorMsg = errJson.message
+    text = await response.text()
   } catch {
-    try {
-      errorMsg = await response.text()
-    } catch {
-      /* ignore */
-    }
+    return errorMsg
   }
-  return errorMsg
+
+  if (!text.trim()) return errorMsg
+
+  try {
+    const errJson = JSON.parse(text)
+    errorMsg = getJsonErrorMessage(errJson) ?? errorMsg
+    if (errJson && typeof errJson === 'object') {
+      const record = errJson as Record<string, unknown>
+      const retryAfter = typeof record.retry_after === 'number' ? record.retry_after : Number(response.headers.get('retry-after') ?? '')
+      if ((record.retryable === true || response.status === 429 || response.status >= 500) && Number.isFinite(retryAfter) && retryAfter > 0) {
+        errorMsg = `${errorMsg}（服务商提示可在 ${Math.trunc(retryAfter)} 秒后重试）`
+      }
+    }
+  } catch {
+    errorMsg = stripHtmlErrorText(text) || text.trim()
+  }
+
+  return errorMsg.length > 1000 ? `${errorMsg.slice(0, 1000)}...` : errorMsg
 }
 
 export function pickActualParams(source: unknown): Partial<TaskParams> {

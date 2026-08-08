@@ -756,7 +756,7 @@ export default function SettingsModal() {
       name: createSeparateImageProfile ? preset.label : activeProfile.name,
       provider,
       apiKey: preserveApiKey ? activeProfile.apiKey : '',
-      apiMode: provider === 'linapi-gpt' ? 'chat' : 'images',
+      apiMode: 'images',
       codexCli: false,
       apiProxy: provider === 'openai' ? apiProxyLocked : false,
       responseFormatB64Json: provider === 'linapi-gpt' ? switchedProfile.responseFormatB64Json : undefined,
@@ -1897,7 +1897,7 @@ export default function SettingsModal() {
                     ) : activeProfile.provider === 'linapi' ? (
                       <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_LINAPI_BASE_URL}</code>，无需填写 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/v1beta/models</code>。</span>
                     ) : activeProfile.provider === 'linapi-gpt' ? (
-                      <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_LINAPI_GPT_BASE_URL}</code>，应用会自动追加 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/chat/completions</code>。</span>
+                      <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_LINAPI_GPT_BASE_URL}</code>，文生图会自动追加 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/images/generations</code>，参考图会走 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/images/edits</code>。</span>
                     ) : (
                       <span>支持通过查询参数覆盖：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiUrl=</code></span>
                     )}
@@ -2020,7 +2020,7 @@ export default function SettingsModal() {
                   ) : activeProfile.provider === 'linapi' ? (
                     <>支持 Gemini 3 Pro Image Preview 与 Gemini 3.1 Flash Image Preview；工作台会按尺寸自动切换 1K / 2K / 4K 模型后缀。</>
                   ) : activeProfile.provider === 'linapi-gpt' ? (
-                    <>通过 Chat Completions 调用 GPT Image，默认模型 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_LINAPI_GPT_MODEL}</code>；横图、竖图和方图会自动映射为兼容尺寸。</>
+                    <>通过 LinAPI Images API 调用 GPT Image，默认模型 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_LINAPI_GPT_MODEL}</code>；横图、竖图和方图会自动映射为兼容尺寸。</>
                   ) : activeCustomProvider ? (
                     <>当前使用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{activeCustomProvider.name}</code>。</>
                   ) : (activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode) === 'responses' ? (

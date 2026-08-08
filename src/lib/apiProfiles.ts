@@ -371,7 +371,7 @@ export function createDefaultLinApiGptProfile(overrides: Partial<ApiProfile> = {
     apiKey: '',
     model: DEFAULT_LINAPI_GPT_MODEL,
     timeout: DEFAULT_API_TIMEOUT,
-    apiMode: 'chat',
+    apiMode: 'images',
     codexCli: false,
     apiProxy: false,
     ...overrides,
@@ -434,7 +434,7 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
       provider,
       baseUrl: savedDraft?.baseUrl ?? DEFAULT_LINAPI_GPT_BASE_URL,
       model: savedDraft?.model ?? DEFAULT_LINAPI_GPT_MODEL,
-      apiMode: 'chat',
+      apiMode: 'images',
       codexCli: false,
       apiProxy: false,
       responseFormatB64Json: savedDraft?.responseFormatB64Json,
@@ -653,7 +653,7 @@ export function isOpenRouterImageGenerationProfile(profile: Pick<ApiProfile, 'pr
 }
 
 export function canApiProfileGenerateImages(profile: Pick<ApiProfile, 'provider' | 'baseUrl' | 'apiMode'>): boolean {
-  return profile.apiMode === 'images' || profile.provider === 'linapi-gpt' || isOpenRouterImageGenerationProfile(profile)
+  return profile.apiMode === 'images' || isOpenRouterImageGenerationProfile(profile)
 }
 
 function resolveAmazonPlannerProfileId(profiles: ApiProfile[], value: unknown): string {
@@ -789,7 +789,7 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
   const apiMode: ApiMode = provider === 'linapi'
     ? 'images'
     : provider === 'linapi-gpt'
-      ? 'chat'
+      ? 'images'
     : record.apiMode === 'responses' || record.apiMode === 'chat'
       ? record.apiMode
       : 'images'
