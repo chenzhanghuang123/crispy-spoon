@@ -15,9 +15,10 @@ afterEach(() => {
 describe('LinAPI GPT image adapter', () => {
   it('maps workspace dimensions to supported GPT Image sizes', () => {
     expect(getLinApiGptImageSize('1024x1024')).toBe('1024x1024')
-    expect(getLinApiGptImageSize('2048x1536')).toBe('1536x1024')
-    expect(getLinApiGptImageSize('1536x2048')).toBe('1024x1536')
-    expect(getLinApiGptImageSize('auto')).toBe('1024x1024')
+    expect(getLinApiGptImageSize('2048x1536')).toBe('2048x1536')
+    expect(getLinApiGptImageSize('3840x2160')).toBe('3840x2160')
+    expect(getLinApiGptImageSize('auto')).toBe('auto')
+    expect(getLinApiGptImageSize('not-a-size')).toBe('1024x1024')
   })
 
   it('sends the Images API generation request body documented by LinAPI', async () => {
@@ -38,23 +39,22 @@ describe('LinAPI GPT image adapter', () => {
       responseFormatB64Json: true,
     }))
 
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://www.linapi.net/v1/images/generations')
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://api.linapi.net/v1/images/generations')
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit
     expect(init.headers).toEqual(expect.objectContaining({
       Authorization: 'Bearer linapi-gpt-test-key',
       'Content-Type': 'application/json',
     }))
     expect(JSON.parse(String(init.body))).toEqual({
-      model: 'gpt-image-2-4K',
+      model: 'gpt-image-2',
       prompt: 'Generate a product hero image.',
-      size: '1536x1024',
-      quality: 'hd',
-      style: 'vivid',
-      n: 10,
-      response_format: 'b64_json',
+      background: 'auto',
+      size: '2048x1536',
+      quality: 'high',
+      output_format: 'png',
     })
     expect(result.images).toEqual([`data:image/png;base64,${TEST_PNG_BASE64}`])
-    expect(result.actualParams).toMatchObject({ size: '1536x1024', quality: 'high', n: 1 })
+    expect(result.actualParams).toMatchObject({ size: '2048x1536', quality: 'high', output_format: 'png', n: 1 })
   })
 
   it('sends reference images through Images Edits multipart requests', async () => {
@@ -77,18 +77,22 @@ describe('LinAPI GPT image adapter', () => {
     }, createDefaultLinApiGptProfile({ apiKey: 'linapi-key' }))
 
     const apiCall = fetchMock.mock.calls.find(([input]) => String(input).includes('/images/edits'))
-    expect(apiCall?.[0]).toBe('https://www.linapi.net/v1/images/edits')
+    expect(apiCall?.[0]).toBe('https://api.linapi.net/v1/images/edits')
     const init = apiCall?.[1] as RequestInit
     expect(init.headers).toEqual({ Authorization: 'Bearer linapi-key' })
     const formData = init.body as FormData
-    expect(formData.get('model')).toBe('gpt-image-2-4K')
+    expect(formData.get('model')).toBe('gpt-image-2')
     expect(formData.get('prompt')).toBe('Keep the product unchanged.')
+    expect(formData.get('background')).toBe('auto')
     expect(formData.get('size')).toBe('1024x1536')
-    expect(formData.get('quality')).toBe('standard')
-    expect(formData.get('style')).toBe('vivid')
-    expect(formData.get('n')).toBe('1')
-    expect(formData.get('response_format')).toBe('url')
-    expect(formData.getAll('image[]')).toHaveLength(1)
+    expect(formData.get('quality')).toBe('medium')
+    expect(formData.get('output_format')).toBe(DEFAULT_PARAMS.output_format)
+    expect(formData.get('output_compression')).toBe(String(DEFAULT_PARAMS.output_compression))
+    expect(formData.get('style')).toBeNull()
+    expect(formData.get('n')).toBeNull()
+    expect(formData.get('response_format')).toBeNull()
+    expect(formData.getAll('image')).toHaveLength(1)
+    expect(formData.getAll('image[]')).toHaveLength(0)
   })
 
   it('downloads URL results and routes the built-in provider through callImageApi', async () => {
@@ -121,7 +125,7 @@ describe('LinAPI GPT image adapter', () => {
     const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))
     expect(body.prompt).toContain('expected image resolution 1024x1536 px')
     expect(body.size).toBe('1024x1536')
-    expect(body.response_format).toBe('url')
+    expect(body.response_format).toBeUndefined()
     expect(result.images[0]).toMatch(/^data:image\/png;base64,/)
     expect(result.rawImageUrls).toEqual([imageUrl])
   })

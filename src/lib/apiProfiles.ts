@@ -28,13 +28,15 @@ export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_LINAPI_BASE_URL = 'https://api.linapi.net'
 export const DEFAULT_LINAPI_MODEL = 'gemini-3-pro-image-preview'
-export const DEFAULT_LINAPI_GPT_BASE_URL = 'https://www.linapi.net/v1'
-export const DEFAULT_LINAPI_GPT_MODEL = 'gpt-image-2-4K'
+export const DEFAULT_LINAPI_GPT_BASE_URL = 'https://api.linapi.net/v1'
+export const DEFAULT_LINAPI_GPT_MODEL = 'gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_AMAZON_PLANNER_PROFILE_ID = 'default-openai-planner'
 export const DEFAULT_API_TIMEOUT = 600
 
 const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal', 'linapi', 'linapi-gpt'])
+const LEGACY_LINAPI_GPT_BASE_URL = 'https://www.linapi.net/v1'
+const LEGACY_LINAPI_GPT_MODEL = 'gpt-image-2-4K'
 const DEFAULT_CUSTOM_PROVIDER_PATHS = {
   generationPath: 'images/generations',
   editPath: 'images/edits',
@@ -116,6 +118,20 @@ function normalizeRequestMethod(value: unknown, fallback: CustomProviderRequestM
 
 function normalizeContentType(value: unknown, fallback: CustomProviderContentType = 'json'): CustomProviderContentType {
   return value === 'multipart' ? 'multipart' : fallback
+}
+
+function normalizeLinApiGptBaseUrl(value: string | undefined): string {
+  const normalized = (value ?? '').trim().replace(/\/+$/, '')
+    .replace(/\/(?:chat\/completions|images\/generations|images\/edits)$/i, '')
+  if (!normalized) return DEFAULT_LINAPI_GPT_BASE_URL
+  if (normalized.toLowerCase() === LEGACY_LINAPI_GPT_BASE_URL.toLowerCase()) return DEFAULT_LINAPI_GPT_BASE_URL
+  return normalized
+}
+
+function normalizeLinApiGptModel(value: string | undefined): string {
+  const model = (value ?? '').trim()
+  if (!model || model.toLowerCase() === LEGACY_LINAPI_GPT_MODEL.toLowerCase()) return DEFAULT_LINAPI_GPT_MODEL
+  return model
 }
 
 function normalizeBodyTemplate(value: unknown, fallback: Record<string, unknown>): Record<string, unknown> {
@@ -432,8 +448,8 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     return {
       ...profile,
       provider,
-      baseUrl: savedDraft?.baseUrl ?? DEFAULT_LINAPI_GPT_BASE_URL,
-      model: savedDraft?.model ?? DEFAULT_LINAPI_GPT_MODEL,
+      baseUrl: normalizeLinApiGptBaseUrl(savedDraft?.baseUrl),
+      model: normalizeLinApiGptModel(savedDraft?.model),
       apiMode: 'images',
       codexCli: false,
       apiProxy: false,
@@ -497,9 +513,9 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
       : provider === 'linapi'
         ? baseUrl?.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_BASE_URL
         : provider === 'linapi-gpt'
-          ? baseUrl?.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_GPT_BASE_URL
+          ? normalizeLinApiGptBaseUrl(baseUrl)
         : baseUrl,
-    model,
+    model: provider === 'linapi-gpt' ? normalizeLinApiGptModel(model) : model,
     apiMode,
     codexCli: typeof input.codexCli === 'boolean' ? input.codexCli : fallback.codexCli,
     apiProxy: typeof input.apiProxy === 'boolean' ? input.apiProxy : fallback.apiProxy,
@@ -805,10 +821,12 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
       : provider === 'linapi'
         ? rawBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_BASE_URL
         : provider === 'linapi-gpt'
-          ? rawBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_GPT_BASE_URL
+          ? normalizeLinApiGptBaseUrl(rawBaseUrl)
         : rawBaseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
-    model: typeof record.model === 'string' && record.model.trim() ? record.model : defaults.model,
+    model: provider === 'linapi-gpt'
+      ? normalizeLinApiGptModel(typeof record.model === 'string' ? record.model : defaults.model)
+      : typeof record.model === 'string' && record.model.trim() ? record.model : defaults.model,
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : defaults.timeout,
     apiMode,
     codexCli: Boolean(record.codexCli),

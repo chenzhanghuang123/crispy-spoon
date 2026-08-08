@@ -360,6 +360,7 @@ export default function SettingsModal() {
   const apiProxyChecked = activeProfile.provider === 'openai' && (apiProxyLocked || activeProfile.apiProxy)
   const apiProxyEnabled = apiProxyAvailable && activeProfile.provider === 'openai' && apiProxyChecked
   const activeProviderIsOpenAICompatible = isOpenAICompatibleProvider(draft, activeProfile.provider)
+  const activeProviderSupportsResponseFormatB64Json = activeProviderIsOpenAICompatible && activeProfile.provider !== 'linapi-gpt'
   const activeProviderUsesApiUrl = activeProviderIsOpenAICompatible || activeProfile.provider === 'fal' || activeProfile.provider === 'linapi'
   const activeCustomProvider = draft.customProviders.find((provider) => provider.id === activeProfile.provider)
   const defaultProviderOrder = ['openai', 'linapi-gpt', 'linapi', 'fal', ...draft.customProviders.map(p => p.id)]
@@ -1897,7 +1898,7 @@ export default function SettingsModal() {
                     ) : activeProfile.provider === 'linapi' ? (
                       <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_LINAPI_BASE_URL}</code>，无需填写 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/v1beta/models</code>。</span>
                     ) : activeProfile.provider === 'linapi-gpt' ? (
-                      <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_LINAPI_GPT_BASE_URL}</code>，文生图会自动追加 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/images/generations</code>，参考图会走 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/images/edits</code>。</span>
+                      <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_LINAPI_GPT_BASE_URL}</code>，文生图追加 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/images/generations</code>，参考图追加 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/images/edits</code>。</span>
                     ) : (
                       <span>支持通过查询参数覆盖：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiUrl=</code></span>
                     )}
@@ -2020,7 +2021,7 @@ export default function SettingsModal() {
                   ) : activeProfile.provider === 'linapi' ? (
                     <>支持 Gemini 3 Pro Image Preview 与 Gemini 3.1 Flash Image Preview；工作台会按尺寸自动切换 1K / 2K / 4K 模型后缀。</>
                   ) : activeProfile.provider === 'linapi-gpt' ? (
-                    <>通过 LinAPI Images API 调用 GPT Image，默认模型 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_LINAPI_GPT_MODEL}</code>；横图、竖图和方图会自动映射为兼容尺寸。</>
+                    <>通过 LinAPI Images API 调用 GPT Image，官方文档固定模型 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_LINAPI_GPT_MODEL}</code>；支持 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">auto</code>、2K/4K 和合法自定义尺寸。</>
                   ) : activeCustomProvider ? (
                     <>当前使用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{activeCustomProvider.name}</code>。</>
                   ) : (activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode) === 'responses' ? (
@@ -2041,7 +2042,7 @@ export default function SettingsModal() {
               </label>
 
               {/* 8. 返回 Base64 图片数据 */}
-              {activeProviderIsOpenAICompatible && (
+              {activeProviderSupportsResponseFormatB64Json && (
                 <div className="block">
                   <div className="mb-1.5 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">返回 Base64 图片数据</span>

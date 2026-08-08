@@ -11,6 +11,7 @@ export function getOutputImageLimitForSettings(settings: AppSettings) {
   const provider = getActiveApiProfile(settings).provider
   if (provider === 'fal') return MAX_FAL_OUTPUT_IMAGES
   if (provider === 'linapi') return MAX_LINAPI_OUTPUT_IMAGES
+  if (provider === 'linapi-gpt') return 1
   return MAX_OPENAI_OUTPUT_IMAGES
 }
 

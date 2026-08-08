@@ -14,6 +14,7 @@ import {
   type CallApiOptions,
   type CallApiResult,
 } from './imageApiShared'
+import { normalizeImageSize } from './size'
 
 type ImageCandidate =
   | { kind: 'url', value: string }
@@ -22,30 +23,43 @@ type ImageCandidate =
 const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504])
 const DEFAULT_RETRY_DELAY_MS = 750
 const MAX_RETRY_DELAY_MS = 3000
+const LEGACY_LINAPI_GPT_BASE_URL = 'https://www.linapi.net/v1'
+const LEGACY_LINAPI_GPT_MODEL = 'gpt-image-2-4K'
+const SIZE_PATTERN = /^(\d+)\s*[xX×]\s*(\d+)$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
-export function getLinApiGptImageSize(size: string): '1024x1024' | '1536x1024' | '1024x1536' {
-  const match = size.trim().match(/^(\d+)\s*[xX×]\s*(\d+)$/)
+export function getLinApiGptImageSize(size: string): string {
+  const trimmed = size.trim()
+  if (trimmed.toLowerCase() === 'auto') return 'auto'
+  const match = trimmed.match(SIZE_PATTERN)
   if (!match) return '1024x1024'
 
   const width = Number(match[1])
   const height = Number(match[2])
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return '1024x1024'
-  if (width > height) return '1536x1024'
-  if (height > width) return '1024x1536'
-  return '1024x1024'
+
+  return normalizeImageSize(trimmed) || '1024x1024'
 }
 
 function getLinApiGptBaseUrl(baseUrl: string): string {
   const normalized = baseUrl.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_GPT_BASE_URL
-  return normalized.replace(/\/(?:chat\/completions|images\/generations|images\/edits)$/i, '')
+  const withoutEndpoint = normalized.replace(/\/(?:chat\/completions|images\/generations|images\/edits)$/i, '')
+  return withoutEndpoint.toLowerCase() === LEGACY_LINAPI_GPT_BASE_URL.toLowerCase()
+    ? DEFAULT_LINAPI_GPT_BASE_URL
+    : withoutEndpoint
 }
 
 function getLinApiGptEndpoint(baseUrl: string, path: 'images/generations' | 'images/edits'): string {
   return `${getLinApiGptBaseUrl(baseUrl)}/${path}`
+}
+
+function getLinApiGptModel(model: string): string {
+  const normalized = model.trim()
+  if (!normalized || normalized.toLowerCase() === LEGACY_LINAPI_GPT_MODEL.toLowerCase()) return DEFAULT_LINAPI_GPT_MODEL
+  return normalized
 }
 
 function addUrlCandidate(value: unknown, candidates: ImageCandidate[]) {
@@ -221,15 +235,20 @@ async function fetchLinApiGptWithRetry(input: RequestInfo | URL, init: RequestIn
   throw lastNetworkError instanceof Error ? lastNetworkError : new Error(String(lastNetworkError ?? 'LinAPI GPT 请求失败'))
 }
 
-async function createEditFormData(opts: CallApiOptions, profile: ApiProfile, requestSize: string, requestQuality: string, requestCount: number, responseFormat: string): Promise<FormData> {
+function getOutputCompressionParam(params: TaskParams): number | null {
+  if (params.output_format === 'png' || params.output_compression == null) return null
+  return Math.min(100, Math.max(0, Math.trunc(params.output_compression)))
+}
+
+async function createEditFormData(opts: CallApiOptions, profile: ApiProfile, requestSize: string, outputCompression: number | null): Promise<FormData> {
   const formData = new FormData()
-  formData.append('model', profile.model.trim() || DEFAULT_LINAPI_GPT_MODEL)
+  formData.append('model', getLinApiGptModel(profile.model))
   formData.append('prompt', opts.prompt)
+  formData.append('background', 'auto')
   formData.append('size', requestSize)
-  formData.append('quality', requestQuality)
-  formData.append('style', 'vivid')
-  formData.append('n', String(requestCount))
-  formData.append('response_format', responseFormat)
+  formData.append('quality', opts.params.quality)
+  formData.append('output_format', opts.params.output_format)
+  if (outputCompression !== null) formData.append('output_compression', String(outputCompression))
 
   const imageBlobs: Blob[] = []
   for (let i = 0; i < opts.inputImageDataUrls.length; i += 1) {
@@ -248,7 +267,7 @@ async function createEditFormData(opts: CallApiOptions, profile: ApiProfile, req
   for (let i = 0; i < imageBlobs.length; i += 1) {
     const blob = imageBlobs[i]
     const ext = blob.type.split('/')[1] || 'png'
-    formData.append('image[]', blob, `input-${i + 1}.${ext}`)
+    formData.append('image', blob, `input-${i + 1}.${ext}`)
   }
   if (maskBlob) formData.append('mask', maskBlob, 'mask.png')
 
@@ -257,9 +276,7 @@ async function createEditFormData(opts: CallApiOptions, profile: ApiProfile, req
 
 export async function callLinApiGptImageApi(opts: CallApiOptions, profile: ApiProfile): Promise<CallApiResult> {
   const requestSize = getLinApiGptImageSize(opts.params.size)
-  const requestQuality = opts.params.quality === 'high' ? 'hd' : 'standard'
-  const requestCount = Math.min(10, Math.max(1, Math.trunc(opts.params.n || 1)))
-  const responseFormat = profile.responseFormatB64Json ? 'b64_json' : 'url'
+  const outputCompression = getOutputCompressionParam(opts.params)
   const fallbackMime = MIME_MAP[opts.params.output_format] || 'image/png'
   const linkedAbort = createLinkedAbortController(profile.timeout, opts.signal)
   const isEdit = opts.inputImageDataUrls.length > 0
@@ -272,7 +289,7 @@ export async function callLinApiGptImageApi(opts: CallApiOptions, profile: ApiPr
           signal: linkedAbort.controller.signal,
           headers: { Authorization: `Bearer ${profile.apiKey}` },
           cache: 'no-store',
-          body: await createEditFormData(opts, profile, requestSize, requestQuality, requestCount, responseFormat),
+          body: await createEditFormData(opts, profile, requestSize, outputCompression),
         }
       : {
           method: 'POST',
@@ -283,13 +300,13 @@ export async function callLinApiGptImageApi(opts: CallApiOptions, profile: ApiPr
           },
           cache: 'no-store',
           body: JSON.stringify({
-            model: profile.model.trim() || DEFAULT_LINAPI_GPT_MODEL,
+            model: getLinApiGptModel(profile.model),
             prompt: opts.prompt,
+            background: 'auto',
             size: requestSize,
-            quality: requestQuality,
-            style: 'vivid',
-            n: requestCount,
-            response_format: responseFormat,
+            quality: opts.params.quality,
+            output_format: opts.params.output_format,
+            ...(outputCompression !== null ? { output_compression: outputCompression } : {}),
           }),
         }
 
@@ -301,9 +318,9 @@ export async function callLinApiGptImageApi(opts: CallApiOptions, profile: ApiPr
     const parsed = await parseLinApiGptResponse(await readLinApiGptJson(response), fallbackMime, linkedAbort.controller.signal)
     const actualParams: Partial<TaskParams> = {
       size: requestSize,
-      quality: requestQuality === 'hd' ? 'high' : opts.params.quality,
+      quality: opts.params.quality,
       output_format: opts.params.output_format,
-      output_compression: null,
+      output_compression: outputCompression,
       n: parsed.images.length,
     }
     return {

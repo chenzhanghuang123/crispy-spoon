@@ -803,6 +803,21 @@ describe('custom providers', () => {
       model: DEFAULT_LINAPI_GPT_MODEL,
       apiMode: 'images',
     })
+
+    const normalizedLegacy = normalizeSettings({
+      profiles: [createDefaultLinApiGptProfile({
+        id: 'legacy-linapi-gpt-profile',
+        baseUrl: 'https://www.linapi.net/v1',
+        model: 'gpt-image-2-4K',
+      })],
+      activeProfileId: 'legacy-linapi-gpt-profile',
+    })
+    expect(normalizedLegacy.profiles[0]).toMatchObject({
+      provider: 'linapi-gpt',
+      baseUrl: DEFAULT_LINAPI_GPT_BASE_URL,
+      model: DEFAULT_LINAPI_GPT_MODEL,
+      apiMode: 'images',
+    })
   })
 })
 

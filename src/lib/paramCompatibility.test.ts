@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
-import { createDefaultFalProfile, createDefaultLinApiProfile, createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
+import { createDefaultFalProfile, createDefaultLinApiGptProfile, createDefaultLinApiProfile, createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
 import { getOutputImageLimitForSettings, normalizeParamsForSettings } from './paramCompatibility'
 
 describe('parameter compatibility', () => {
@@ -51,6 +51,18 @@ describe('parameter compatibility', () => {
       moderation: 'auto',
       n: 4,
     })
+  })
+
+  it('limits LinAPI GPT Image output count to 1 per documented request', () => {
+    const linApiGptProfile = createDefaultLinApiGptProfile({ apiKey: 'linapi-key' })
+    const settings = normalizeSettings({
+      ...DEFAULT_SETTINGS,
+      profiles: [linApiGptProfile],
+      activeProfileId: linApiGptProfile.id,
+    })
+
+    expect(getOutputImageLimitForSettings(settings)).toBe(1)
+    expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, n: 8 }, settings).n).toBe(1)
   })
 
   it('ignores deprecated OpenAI streaming settings when normalizing output count', () => {
