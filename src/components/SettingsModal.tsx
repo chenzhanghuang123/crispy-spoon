@@ -14,6 +14,9 @@ import {
   DEFAULT_LINAPI_GPT_BASE_URL,
   DEFAULT_LINAPI_GPT_MODEL,
   DEFAULT_LINAPI_MODEL,
+  DEFAULT_NIAOTV_BASE_URL,
+  DEFAULT_NIAOTV_MODEL,
+  NIAOTV_IMAGE_MODELS,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_RESPONSES_MODEL,
@@ -44,6 +47,7 @@ import Select from './Select'
 import { Sheet, useSheetDrag } from './Sheet'
 import { Checkbox } from './Checkbox'
 import ViewportTooltip from './ViewportTooltip'
+import NiaoTvUsagePanel from './NiaoTvUsagePanel'
 import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, ExportIcon, ImportIcon, DragHandleIcon, LinkIcon, PhotoIcon, WrenchIcon } from './icons'
 
 function newId(prefix: string) {
@@ -56,6 +60,7 @@ const LEGACY_DEFAULT_CHAT_MODEL = 'deepseek-v4-flash'
 const DEEPSEEK_PLANNER_NOTICE = '当前 AI 策划配置为 DeepSeek 官方接口。DeepSeek 策划阶段不会读取参考图，系统会仅用 Listing 文本和你填写的商品信息生成策划；参考图仍会在正式生图时随生图请求发送。请把产品颜色、形状、结构、配件、Logo、套装数量等关键特征写进 Listing 或商品信息中。'
 const QUICK_IMAGE_PRESETS = [
   { provider: 'openai', label: 'OpenAI 生图' },
+  { provider: 'niaotv', label: 'NiaoTV AI 生图' },
   { provider: 'linapi-gpt', label: 'LinAPI GPT 生图' },
   { provider: 'linapi', label: 'LinAPI Gemini 生图' },
   { provider: 'fal', label: 'fal.ai 生图' },
@@ -361,15 +366,16 @@ export default function SettingsModal() {
   const apiProxyEnabled = apiProxyAvailable && activeProfile.provider === 'openai' && apiProxyChecked
   const activeProviderIsOpenAICompatible = isOpenAICompatibleProvider(draft, activeProfile.provider)
   const activeProviderSupportsResponseFormatB64Json = activeProviderIsOpenAICompatible && activeProfile.provider !== 'linapi-gpt'
-  const activeProviderUsesApiUrl = activeProviderIsOpenAICompatible || activeProfile.provider === 'fal' || activeProfile.provider === 'linapi'
+  const activeProviderUsesApiUrl = activeProviderIsOpenAICompatible || activeProfile.provider === 'fal' || activeProfile.provider === 'linapi' || activeProfile.provider === 'niaotv'
   const activeCustomProvider = draft.customProviders.find((provider) => provider.id === activeProfile.provider)
-  const defaultProviderOrder = ['openai', 'linapi-gpt', 'linapi', 'fal', ...draft.customProviders.map(p => p.id)]
+  const defaultProviderOrder = ['openai', 'niaotv', 'linapi-gpt', 'linapi', 'fal', ...draft.customProviders.map(p => p.id)]
   const providerOrder = draft.providerOrder
     ? [...draft.providerOrder, ...defaultProviderOrder.filter((provider) => !draft.providerOrder?.includes(provider))]
     : defaultProviderOrder
 
   const unorderedProviderOptions = [
     { label: 'OpenAI 兼容接口', value: 'openai', draggable: true },
+    { label: 'NiaoTV AI 生图', value: 'niaotv', draggable: true },
     { label: 'LinAPI GPT Image', value: 'linapi-gpt', draggable: true },
     { label: 'LinAPI Gemini 生图', value: 'linapi', draggable: true },
     { label: 'fal.ai', value: 'fal', draggable: true },
@@ -550,6 +556,8 @@ export default function SettingsModal() {
           ? profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_BASE_URL
           : profile.provider === 'linapi-gpt'
             ? profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_GPT_BASE_URL
+            : profile.provider === 'niaotv'
+              ? profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_NIAOTV_BASE_URL
           : normalizeBaseUrl(profile.baseUrl.trim() || DEFAULT_SETTINGS.baseUrl)
       const defaultModel = profile.provider === 'fal'
         ? DEFAULT_FAL_MODEL
@@ -557,6 +565,8 @@ export default function SettingsModal() {
           ? DEFAULT_LINAPI_MODEL
           : profile.provider === 'linapi-gpt'
             ? DEFAULT_LINAPI_GPT_MODEL
+            : profile.provider === 'niaotv'
+              ? DEFAULT_NIAOTV_MODEL
           : getDefaultModelForMode(profile.apiMode)
       return {
         ...profile,
@@ -748,6 +758,8 @@ export default function SettingsModal() {
       ? { baseUrl: DEFAULT_LINAPI_BASE_URL, model: DEFAULT_LINAPI_MODEL }
       : provider === 'linapi-gpt'
         ? { baseUrl: DEFAULT_LINAPI_GPT_BASE_URL, model: DEFAULT_LINAPI_GPT_MODEL }
+      : provider === 'niaotv'
+        ? { baseUrl: DEFAULT_NIAOTV_BASE_URL, model: DEFAULT_NIAOTV_MODEL }
       : provider === 'fal'
         ? { baseUrl: DEFAULT_FAL_BASE_URL, model: DEFAULT_FAL_MODEL }
         : { baseUrl: DEFAULT_SETTINGS.baseUrl, model: DEFAULT_IMAGES_MODEL }
@@ -1072,7 +1084,7 @@ export default function SettingsModal() {
   }
 
   const handleProviderReorder = (sourceValue: string | number, targetValue: string | number, position: 'before' | 'after' | null) => {
-    const defaultOrder = ['openai', 'linapi-gpt', 'linapi', 'fal', ...draft.customProviders.map(p => p.id)]
+    const defaultOrder = ['openai', 'niaotv', 'linapi-gpt', 'linapi', 'fal', ...draft.customProviders.map(p => p.id)]
     const currentOrder = draft.providerOrder
       ? [...draft.providerOrder, ...defaultOrder.filter((provider) => !draft.providerOrder?.includes(provider))]
       : defaultOrder
@@ -1885,8 +1897,10 @@ export default function SettingsModal() {
                       ? DEFAULT_FAL_BASE_URL
                       : activeProfile.provider === 'linapi'
                         ? DEFAULT_LINAPI_BASE_URL
-                        : activeProfile.provider === 'linapi-gpt'
+                      : activeProfile.provider === 'linapi-gpt'
                           ? DEFAULT_LINAPI_GPT_BASE_URL
+                        : activeProfile.provider === 'niaotv'
+                          ? DEFAULT_NIAOTV_BASE_URL
                         : DEFAULT_SETTINGS.baseUrl}
                     className={`ios-field w-full px-3 py-2.5 text-sm ${apiProxyEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                   />
@@ -1899,6 +1913,8 @@ export default function SettingsModal() {
                       <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_LINAPI_BASE_URL}</code>，无需填写 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/v1beta/models</code>。</span>
                     ) : activeProfile.provider === 'linapi-gpt' ? (
                       <span>默认使用 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_LINAPI_GPT_BASE_URL}</code>，文生图追加 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/images/generations</code>，参考图追加 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">/images/edits</code>。</span>
+                    ) : activeProfile.provider === 'niaotv' ? (
+                      <span>配置、报价和积分使用默认入口 <code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">{DEFAULT_NIAOTV_BASE_URL}</code>；同步生图会优先使用直连入口并自动保留幂等键。</span>
                     ) : (
                       <span>支持通过查询参数覆盖：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiUrl=</code></span>
                     )}
@@ -1940,7 +1956,13 @@ export default function SettingsModal() {
                     onChange={(e) => updateActiveProfile({ apiKey: e.target.value })}
                     onBlur={(e) => commitActiveProfilePatch({ apiKey: e.target.value })}
                     type={showApiKey ? 'text' : 'password'}
-                    placeholder={activeProfile.provider === 'fal' ? 'FAL_KEY' : activeProfile.provider === 'linapi' || activeProfile.provider === 'linapi-gpt' ? 'LinAPI API Key' : 'sk-...'}
+                    placeholder={activeProfile.provider === 'fal'
+                      ? 'FAL_KEY'
+                      : activeProfile.provider === 'linapi' || activeProfile.provider === 'linapi-gpt'
+                        ? 'LinAPI API Key'
+                        : activeProfile.provider === 'niaotv'
+                          ? 'aip_...'
+                          : 'sk-...'}
                     className="ios-field w-full px-3 py-2.5 pr-10 text-sm"
                   />
                   <button
@@ -1968,6 +1990,8 @@ export default function SettingsModal() {
                   输入后自动保存在当前电脑的浏览器中，刷新或重启会自动恢复。支持通过查询参数覆盖：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiKey=</code>
                 </div>
               </div>
+
+              {activeProfile.provider === 'niaotv' && <NiaoTvUsagePanel profile={activeProfile} />}
 
               {/* 6. API 接口（Images/Responses/Chat） */}
               {activeProfile.provider === 'openai' && (
@@ -1997,24 +2021,33 @@ export default function SettingsModal() {
               )}
 
               {/* 7. 模型 ID（紧跟接口选择） */}
-              <label className="block">
+              <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">
                   模型 ID
                 </span>
-                <input
-                  value={activeProfile.model}
-                  onChange={(e) => updateActiveProfile({ model: e.target.value })}
-                  onBlur={(e) => commitActiveProfilePatch({ model: e.target.value })}
-                  type="text"
-                  placeholder={activeProfile.provider === 'fal'
-                    ? DEFAULT_FAL_MODEL
-                    : activeProfile.provider === 'linapi'
-                      ? DEFAULT_LINAPI_MODEL
-                      : activeProfile.provider === 'linapi-gpt'
-                        ? DEFAULT_LINAPI_GPT_MODEL
-                      : getDefaultModelForMode(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode)}
-                  className="ios-field w-full px-3 py-2.5 text-sm"
-                />
+                {activeProfile.provider === 'niaotv' ? (
+                  <Select
+                    value={activeProfile.model}
+                    onChange={(value) => updateActiveProfile({ model: String(value) }, true)}
+                    options={NIAOTV_IMAGE_MODELS.map((model) => ({ label: model.label, value: model.id }))}
+                    className="ios-field w-full px-3 py-2.5 text-sm"
+                  />
+                ) : (
+                  <input
+                    value={activeProfile.model}
+                    onChange={(e) => updateActiveProfile({ model: e.target.value })}
+                    onBlur={(e) => commitActiveProfilePatch({ model: e.target.value })}
+                    type="text"
+                    placeholder={activeProfile.provider === 'fal'
+                      ? DEFAULT_FAL_MODEL
+                      : activeProfile.provider === 'linapi'
+                        ? DEFAULT_LINAPI_MODEL
+                        : activeProfile.provider === 'linapi-gpt'
+                          ? DEFAULT_LINAPI_GPT_MODEL
+                        : getDefaultModelForMode(activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode)}
+                    className="ios-field w-full px-3 py-2.5 text-sm"
+                  />
+                )}
                 <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
                   {activeProfile.provider === 'fal' ? (
                     <>当前适配 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_FAL_MODEL}</code>。</>
@@ -2022,6 +2055,8 @@ export default function SettingsModal() {
                     <>支持 Gemini 3 Pro Image Preview 与 Gemini 3.1 Flash Image Preview；工作台会按尺寸自动切换 1K / 2K / 4K 模型后缀。</>
                   ) : activeProfile.provider === 'linapi-gpt' ? (
                     <>通过 LinAPI Images API 调用 GPT Image，官方文档固定模型 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{DEFAULT_LINAPI_GPT_MODEL}</code>；支持 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">auto</code>、2K/4K 和合法自定义尺寸。</>
+                  ) : activeProfile.provider === 'niaotv' ? (
+                    <>支持 GPT Image 2、Nano Banana 2 与 Nano Banana Pro；提交前会读取实时可用性、合法尺寸、报价和积分余额，最多支持 6 张参考图。</>
                   ) : activeCustomProvider ? (
                     <>当前使用 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">{activeCustomProvider.name}</code>。</>
                   ) : (activeProfile.apiMode ?? DEFAULT_SETTINGS.apiMode) === 'responses' ? (
@@ -2039,7 +2074,7 @@ export default function SettingsModal() {
                     <>支持通过查询参数覆盖：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">?model=</code>。</>
                   )}
                 </div>
-              </label>
+              </div>
 
               {/* 8. 返回 Base64 图片数据 */}
               {activeProviderSupportsResponseFormatB64Json && (
@@ -2086,7 +2121,7 @@ export default function SettingsModal() {
               )}
 
               {/* 11. 请求超时 */}
-              {activeProviderIsOpenAICompatible && (
+              {(activeProviderIsOpenAICompatible || activeProfile.provider === 'niaotv') && (
                 <label className="block">
                   <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">请求超时 (秒)</span>
                   <input

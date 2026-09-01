@@ -30,11 +30,19 @@ export const DEFAULT_LINAPI_BASE_URL = 'https://api.linapi.net'
 export const DEFAULT_LINAPI_MODEL = 'gemini-3-pro-image-preview'
 export const DEFAULT_LINAPI_GPT_BASE_URL = 'https://api.linapi.net/v1'
 export const DEFAULT_LINAPI_GPT_MODEL = 'gpt-image-2'
+export const DEFAULT_NIAOTV_BASE_URL = 'https://ai-proxy.niaotv.art'
+export const DEFAULT_NIAOTV_DIRECT_BASE_URL = 'https://ai-direct.niaotv.art'
+export const DEFAULT_NIAOTV_MODEL = 'gpt-image-2'
+export const NIAOTV_IMAGE_MODELS = [
+  { id: 'gpt-image-2', label: 'GPT Image 2' },
+  { id: 'gemini-3.1-flash-image', label: 'Nano Banana 2' },
+  { id: 'gemini-3-pro-image', label: 'Nano Banana Pro' },
+] as const
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
 export const DEFAULT_AMAZON_PLANNER_PROFILE_ID = 'default-openai-planner'
 export const DEFAULT_API_TIMEOUT = 600
 
-const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal', 'linapi', 'linapi-gpt'])
+const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal', 'linapi', 'linapi-gpt', 'niaotv'])
 const LEGACY_LINAPI_GPT_BASE_URL = 'https://www.linapi.net/v1'
 const LEGACY_LINAPI_GPT_MODEL = 'gpt-image-2-4K'
 const DEFAULT_CUSTOM_PROVIDER_PATHS = {
@@ -132,6 +140,18 @@ function normalizeLinApiGptModel(value: string | undefined): string {
   const model = (value ?? '').trim()
   if (!model || model.toLowerCase() === LEGACY_LINAPI_GPT_MODEL.toLowerCase()) return DEFAULT_LINAPI_GPT_MODEL
   return model
+}
+
+function normalizeNiaoTvBaseUrl(value: string | undefined): string {
+  const normalized = (value ?? '').trim().replace(/\/+$/, '')
+    .replace(/\/v1\/(?:provider(?:\/config(?:\/quote)?)?|account\/(?:token-balance|usage)|images\/(?:generations|edits))$/i, '')
+    .replace(/\/v1$/i, '')
+  return normalized || DEFAULT_NIAOTV_BASE_URL
+}
+
+function normalizeNiaoTvModel(value: string | undefined): string {
+  const model = (value ?? '').trim()
+  return NIAOTV_IMAGE_MODELS.some((item) => item.id === model) ? model : DEFAULT_NIAOTV_MODEL
 }
 
 function normalizeBodyTemplate(value: unknown, fallback: Record<string, unknown>): Record<string, unknown> {
@@ -396,6 +416,24 @@ export function createDefaultLinApiGptProfile(overrides: Partial<ApiProfile> = {
   }
 }
 
+export function createDefaultNiaoTvProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
+  return {
+    id: `niaotv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    name: 'NiaoTV AI 生图',
+    provider: 'niaotv',
+    baseUrl: DEFAULT_NIAOTV_BASE_URL,
+    apiKey: '',
+    model: DEFAULT_NIAOTV_MODEL,
+    timeout: DEFAULT_API_TIMEOUT,
+    apiMode: 'images',
+    codexCli: false,
+    apiProxy: false,
+    ...overrides,
+    streamImages: false,
+    streamPartialImages: DEFAULT_STREAM_PARTIAL_IMAGES,
+  }
+}
+
 export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvider, customProvider?: CustomProviderDefinition): ApiProfile {
   const providerDrafts = {
     ...profile.providerDrafts,
@@ -460,8 +498,24 @@ export function switchApiProfileProvider(profile: ApiProfile, provider: ApiProvi
     }
   }
 
+  if (provider === 'niaotv') {
+    return {
+      ...profile,
+      provider,
+      baseUrl: normalizeNiaoTvBaseUrl(savedDraft?.baseUrl),
+      model: normalizeNiaoTvModel(savedDraft?.model),
+      apiMode: 'images',
+      codexCli: false,
+      apiProxy: false,
+      responseFormatB64Json: undefined,
+      streamImages: false,
+      streamPartialImages: DEFAULT_STREAM_PARTIAL_IMAGES,
+      providerDrafts,
+    }
+  }
+
   if (customProvider) {
-    const shouldUseOpenAIDefaults = profile.provider === 'fal' || profile.provider === 'linapi' || profile.provider === 'linapi-gpt'
+    const shouldUseOpenAIDefaults = profile.provider === 'fal' || profile.provider === 'linapi' || profile.provider === 'linapi-gpt' || profile.provider === 'niaotv'
     return {
       ...profile,
       provider: customProvider.id,
@@ -500,11 +554,13 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
       ? createDefaultLinApiProfile()
       : provider === 'linapi-gpt'
         ? createDefaultLinApiGptProfile()
+        : provider === 'niaotv'
+          ? createDefaultNiaoTvProfile()
       : createDefaultOpenAIProfile()
   const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl : undefined
   const model = typeof input.model === 'string' && input.model.trim() ? input.model : undefined
   const apiMode = input.apiMode === 'responses' || input.apiMode === 'chat' ? input.apiMode : input.apiMode === 'images' ? 'images' : undefined
-  const knownProvider = provider === 'fal' || provider === 'linapi' || provider === 'linapi-gpt' || provider === 'openai' || customProviderIds.has(provider)
+  const knownProvider = provider === 'fal' || provider === 'linapi' || provider === 'linapi-gpt' || provider === 'niaotv' || provider === 'openai' || customProviderIds.has(provider)
   if (!knownProvider) return undefined
 
   return {
@@ -514,8 +570,14 @@ function normalizeProviderDraft(input: unknown, provider: ApiProvider, customPro
         ? baseUrl?.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_BASE_URL
         : provider === 'linapi-gpt'
           ? normalizeLinApiGptBaseUrl(baseUrl)
+          : provider === 'niaotv'
+            ? normalizeNiaoTvBaseUrl(baseUrl)
         : baseUrl,
-    model: provider === 'linapi-gpt' ? normalizeLinApiGptModel(model) : model,
+    model: provider === 'linapi-gpt'
+      ? normalizeLinApiGptModel(model)
+      : provider === 'niaotv'
+        ? normalizeNiaoTvModel(model)
+        : model,
     apiMode,
     codexCli: typeof input.codexCli === 'boolean' ? input.codexCli : fallback.codexCli,
     apiProxy: typeof input.apiProxy === 'boolean' ? input.apiProxy : fallback.apiProxy,
@@ -794,17 +856,21 @@ function normalizeDefaultProfileSet(
 export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfile>, customProviderIds = new Set<string>()): ApiProfile {
   const record = input && typeof input === 'object' ? input as Record<string, unknown> : {}
   const rawProvider = typeof record.provider === 'string' ? record.provider : ''
-  const provider: ApiProvider = rawProvider === 'fal' || rawProvider === 'linapi' || rawProvider === 'linapi-gpt' || customProviderIds.has(rawProvider) ? rawProvider : 'openai'
+  const provider: ApiProvider = rawProvider === 'fal' || rawProvider === 'linapi' || rawProvider === 'linapi-gpt' || rawProvider === 'niaotv' || customProviderIds.has(rawProvider) ? rawProvider : 'openai'
   const defaults = provider === 'fal'
     ? createDefaultFalProfile(fallback)
     : provider === 'linapi'
       ? createDefaultLinApiProfile(fallback)
       : provider === 'linapi-gpt'
         ? createDefaultLinApiGptProfile(fallback)
+        : provider === 'niaotv'
+          ? createDefaultNiaoTvProfile(fallback)
       : createDefaultOpenAIProfile(fallback)
   const apiMode: ApiMode = provider === 'linapi'
     ? 'images'
     : provider === 'linapi-gpt'
+      ? 'images'
+    : provider === 'niaotv'
       ? 'images'
     : record.apiMode === 'responses' || record.apiMode === 'chat'
       ? record.apiMode
@@ -822,11 +888,15 @@ export function normalizeApiProfile(input: unknown, fallback?: Partial<ApiProfil
         ? rawBaseUrl.trim().replace(/\/+$/, '') || DEFAULT_LINAPI_BASE_URL
         : provider === 'linapi-gpt'
           ? normalizeLinApiGptBaseUrl(rawBaseUrl)
+          : provider === 'niaotv'
+            ? normalizeNiaoTvBaseUrl(rawBaseUrl)
         : rawBaseUrl,
     apiKey: typeof record.apiKey === 'string' ? record.apiKey : defaults.apiKey,
     model: provider === 'linapi-gpt'
       ? normalizeLinApiGptModel(typeof record.model === 'string' ? record.model : defaults.model)
-      : typeof record.model === 'string' && record.model.trim() ? record.model : defaults.model,
+      : provider === 'niaotv'
+        ? normalizeNiaoTvModel(typeof record.model === 'string' ? record.model : defaults.model)
+        : typeof record.model === 'string' && record.model.trim() ? record.model : defaults.model,
     timeout: typeof record.timeout === 'number' && Number.isFinite(record.timeout) ? record.timeout : defaults.timeout,
     apiMode,
     codexCli: Boolean(record.codexCli),
@@ -937,6 +1007,7 @@ export function getApiProviderLabel(settings: Partial<AppSettings> | unknown, pr
   if (provider === 'fal') return 'fal.ai'
   if (provider === 'linapi') return 'LinAPI Gemini'
   if (provider === 'linapi-gpt') return 'LinAPI GPT Image'
+  if (provider === 'niaotv') return 'NiaoTV AI'
   if (provider === 'openai') return 'OpenAI'
   return getCustomProviderDefinition(settings, provider)?.name ?? provider
 }

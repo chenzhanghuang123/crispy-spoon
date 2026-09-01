@@ -2,6 +2,7 @@ import { getActiveApiProfile, getCustomProviderDefinition } from './apiProfiles'
 import { callFalAiImageApi } from './falAiImageApi'
 import { callLinApiGptImageApi } from './linApiGptImageApi'
 import { callLinApiImageApi } from './linApiImageApi'
+import { callNiaoTvImageApi } from './niaoTvImageApi'
 import { callOpenAICompatibleImageApi } from './openaiCompatibleImageApi'
 import { appendOutputResolutionToPrompt, type CallApiOptions, type CallApiResult } from './imageApiShared'
 
@@ -15,6 +16,7 @@ export async function callImageApi(opts: CallApiOptions): Promise<CallApiResult>
   if (profile.provider === 'fal') return callFalAiImageApi(requestOpts, profile)
   if (profile.provider === 'linapi') return callLinApiImageApi(requestOpts, profile)
   if (profile.provider === 'linapi-gpt') return callLinApiGptImageApi(requestOpts, profile)
+  if (profile.provider === 'niaotv') return callNiaoTvImageApi(requestOpts, profile)
 
   return callOpenAICompatibleImageApi(requestOpts, profile, getCustomProviderDefinition(opts.settings, profile.provider))
 }
