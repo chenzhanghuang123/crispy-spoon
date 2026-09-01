@@ -13,6 +13,7 @@ import {
   buildAmazonAPlusPlanPrompt,
   buildAmazonPlanPrompt,
   buildEtsyPlanPrompt,
+  ETSY_ADDITIONAL_SHOT_BRIEFS,
   ETSY_ORIGINAL_SHOT_COUNT,
   ETSY_SHOT_COUNT,
   ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS,
@@ -151,6 +152,51 @@ describe('Amazon prompt builders', () => {
     expect(prompt).toContain('Do not redesign, recolor, resize, relabel')
     expect(prompt).toContain('Selected visual style (highest priority):')
     expect(prompt).not.toContain('information-rich Amazon gallery layout')
+  })
+
+  it('uses a calibrated camera, composition, focus, and lighting recipe for each appended Etsy shot', () => {
+    const legacyProductionStandard = [
+      'Premium production standard for this appended shot: art-directed by a world-class Etsy conversion strategist and luxury commercial photographer.',
+      'Use a flagship medium-format campaign workflow, museum-grade product styling, category-appropriate elite optics, precise focus control, and a bespoke physical set derived from the product Visual DNA.',
+      'Light with a masterfully controlled multi-light studio setup: large diffused key, shaped fill, subtle separation or rim light, negative fill where useful, accurate color management, and highlight control tailored to the real material and finish.',
+    ].join(' ')
+    const expected = [
+      ['E11', 'Schneider Kreuznach 80mm LS lens', 'f/8', '70-82% of the frame'],
+      ['E12', 'zero keystone distortion', 'f/11', 'maximum of three verified labels'],
+      ['E13', 'Schneider Kreuznach 120mm Macro LS lens', 'calibrated focus stack', 'controlled raking texture'],
+      ['E14', 'Hasselblad X2D 100C with XCD 55V lens', 'f/5.6', '28-45% of the frame'],
+      ['E15', 'Phase One XF IQ4 150MP', 'f/8', '55-70% of the frame'],
+    ] as const
+
+    for (const [index, brief] of ETSY_ADDITIONAL_SHOT_BRIEFS.entries()) {
+      const prompt = buildEtsyPlanPrompt({
+        slot: brief.slot,
+        prompt: `Bespoke product-specific scene ${index + 1}. ${brief.promptRequirement} ${legacyProductionStandard} ${ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS}.`,
+        negativePrompt: 'wrong product, blur',
+        seriesStyleGuide: [
+          'Product Name/Type: Exact handmade product',
+          'Material & Texture Focus: Verified natural material',
+          '',
+          'Campaign mood that should not be repeated in the compact Visual DNA block.',
+        ].join('\n'),
+        styleReferenceAttached: false,
+      })
+      const [slot, camera, apertureOrFocus, composition] = expected[index]
+
+      expect(brief.slot).toBe(slot)
+      expect(prompt).toContain('PRODUCT REFERENCE LOCK (absolute priority)')
+      expect(prompt).toContain(brief.promptRequirement)
+      expect(prompt).toContain(camera)
+      expect(prompt).toContain(apertureOrFocus)
+      expect(prompt).toContain(composition)
+      expect(prompt).toContain('Product Name/Type: Exact handmade product')
+      expect(prompt).not.toContain('Campaign mood that should not be repeated')
+      expect(prompt).not.toContain('100mm lens, f/2.8')
+      expect(prompt).not.toContain('raytracing')
+      expect(prompt).not.toContain('volumetric light')
+      expect(prompt).not.toContain('flagship medium-format campaign workflow')
+      expect(prompt.match(new RegExp(brief.promptRequirement.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))).toHaveLength(1)
+    }
   })
 
   it('identifies the Amazon listing MAIN slot regardless of casing or spacing', () => {
@@ -440,7 +486,9 @@ describe('callAmazonPlannerApi', () => {
     expect(body.instructions).toContain('E13 — 匠心细节价值图')
     expect(body.instructions).toContain('E14 — 买家代入场景图')
     expect(body.instructions).toContain('E15 — 送礼决策收口图')
-    expect(body.instructions).toContain('flagship medium-format campaign workflow')
+    expect(body.instructions).toContain('Do not add camera bodies, lens settings, lighting boilerplate')
+    expect(body.instructions).toContain('For E01-E10 only')
+    expect(body.instructions).toContain('For E11-E15, do not include that shared 100mm f/2.8 technical style')
     expect(body.instructions).toContain(ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS)
     expect(body.input[0].content[0].text).toContain(`dynamic ${ETSY_SHOT_COUNT}-shot bespoke photoshoot blueprint`)
     expect(result.mode).toBe('etsy')
@@ -455,12 +503,17 @@ describe('callAmazonPlannerApi', () => {
       ['E14', '买家代入场景图'],
       ['E15', '送礼决策收口图'],
     ])
-    expect(result.plans[10]?.prompt).toContain('scroll-stopping Etsy cover image')
-    expect(result.plans[11]?.prompt).toContain('never invent a number')
-    expect(result.plans[12]?.prompt).toContain('craftsmanship and value-proof macro image')
-    expect(result.plans[13]?.prompt).toContain('buyer-self-projection lifestyle image')
-    expect(result.plans[14]?.prompt).toContain('final conversion-closing image')
-    expect(result.plans[14]?.prompt).toContain('world-class Etsy conversion strategist')
+    expect(result.plans[10]?.prompt).toBe(apiPayload.imagePlans[10]?.prompt)
+    expect(result.plans[10]?.planMarkdown).toContain('新增固定镜头要求')
+    expect(result.plans[11]?.negativePrompt).toContain('invented dimensions')
+    const finalHeroPrompt = buildEtsyPlanPrompt({
+      ...result.plans[10]!,
+      seriesStyleGuide: result.seriesStyleGuide,
+      styleReferenceAttached: false,
+    })
+    expect(finalHeroPrompt).toContain('scroll-stopping Etsy cover image')
+    expect(finalHeroPrompt).toContain('Phase One XF IQ4 150MP')
+    expect(finalHeroPrompt).not.toContain('100mm lens, f/2.8')
     expect(result.etsyVisualDna?.materialTextureFocus).toContain('Speckled stoneware')
     expect(result.seriesStyleGuide).toContain('Product Name/Type: Hand-thrown ceramic mug')
   })

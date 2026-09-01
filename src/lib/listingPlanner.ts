@@ -246,6 +246,118 @@ export const ETSY_ADDITIONAL_SHOT_COUNT = 5
 export const ETSY_SHOT_COUNT = ETSY_ORIGINAL_SHOT_COUNT + ETSY_ADDITIONAL_SHOT_COUNT
 export const ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS = 'Shot on Hasselblad X2D 100C, 100mm lens, f/2.8, 8k resolution, photorealistic, hyper-detailed, cinematic lighting, volumetric light, raytracing, global illumination, 1:1 aspect ratio'
 
+export const ETSY_ADDITIONAL_SHOT_BRIEFS = [
+  {
+    slot: 'E11',
+    label: '吸睛首页图',
+    planRequirement: '打造一张能在 Etsy 搜索缩略图中立刻抓住买家视线的首屏主图：产品必须一眼可识别、主体占比明确、层次干净、情绪强烈且具高级手作品牌感；场景必须依据该产品的视觉 DNA 定制，不使用文字贴纸、促销角标或通用模板。',
+    promptRequirement: 'Create a scroll-stopping Etsy cover image that remains instantly readable at small search-thumbnail size. The exact product must be the unmistakable visual hero with immediate category recognition, premium handmade desirability, clean hierarchy, and no text or promotional graphics.',
+    compositionRequirement: 'Choose the most truthful selling angle for the product category: straight-on for flat or framed work, a controlled three-quarter angle for dimensional objects, or overhead only for products genuinely sold as flat lays. Keep the complete product visible, undistorted, uncropped, and approximately 70-82% of the frame. Use no more than two quiet supporting props, never overlapping the product.',
+    cameraRequirement: 'Phase One XF IQ4 150MP with Schneider Kreuznach 80mm LS lens, ISO 50, f/8, 1/125s, tripod, perspective correction, full-product sharpness, natural medium-format depth and micro-contrast.',
+    lightingRequirement: 'Broncolor Scoro lighting with a large diffused key shaped to the real material, soft controlled fill, narrow separation light only when needed, black flags for edge definition, and reflection control that preserves true color and texture without glare.',
+    finishRequirement: 'Premium but believable commercial photography, clean tonal separation, realistic contact shadows, accurate white balance, refined retouching, no HDR halos, no CGI sheen, and a final 150-pixel thumbnail legibility check.',
+    negativeRequirement: 'weak thumbnail impact, tiny product, cropped product, warped geometry, wrong proportions, confusing focal point, generic stock scene, excessive props, text overlay, promotional badge, CGI render, artificial haze',
+  },
+  {
+    slot: 'E12',
+    label: '尺寸规格图',
+    planRequirement: '制作清晰、优雅、可信的尺寸与比例图，只能使用用户资料中已验证的尺寸、容量、重量或规格；以简洁测量线、比例参照和易读层级减少购买疑虑。若缺少数字尺寸，不得编造，改用真实通用参照表达比例，并在中文策划中注明需要卖家确认数字。',
+    promptRequirement: 'Create a precise premium size and scale image that removes purchase uncertainty. Display only dimensions, capacity, weight, quantity, and specifications explicitly verified in the product facts. Never infer, round, convert, or invent a number.',
+    compositionRequirement: 'Use a straight-on or true orthographic product view with corrected verticals, the complete product at approximately 62-72% of the frame, generous clean margins, thin measurement lines, restrained arrowheads, and a maximum of three verified labels. Keep labels outside the product silhouette. If no numeric size is verified, omit all numbers and use one universally recognizable scale reference instead.',
+    cameraRequirement: 'Phase One XF IQ4 150MP with Schneider Kreuznach 80mm LS lens, ISO 50, f/11, tripod, calibrated camera height, zero keystone distortion, edge-to-edge sharpness, and accurate product proportions.',
+    lightingRequirement: 'Large even diffused studio source with symmetric fill, subtle grounding shadow, cross-polarization or flagged reflection control when appropriate, neutral color management, and no dramatic rim light or volumetric atmosphere.',
+    finishRequirement: 'Luxury editorial infographic discipline with crisp geometry, high contrast, ample negative space, clean readable numerals, and truthful scale. Prioritize specification clarity over mood, cinematic effects, or decorative styling.',
+    negativeRequirement: 'invented dimensions, incorrect numerals, false measurements, unreadable labels, warped proportions, perspective distortion, cluttered infographic, misleading scale, shallow depth of field, dramatic haze, decorative props, CGI render',
+  },
+  {
+    slot: 'E13',
+    label: '匠心细节价值图',
+    planRequirement: '用顶级微距商业摄影证明产品价值，聚焦最能支撑价格与品质感的材质、纹理、手工痕迹、连接结构或表面工艺；通过精准控光、焦点堆栈和细腻高光建立买家信任，但绝不虚构不存在的工艺。',
+    promptRequirement: 'Create a world-class craftsmanship and value-proof macro photograph. Reveal one verified material, texture, handmade detail, joinery, surface treatment, or construction feature that most strongly supports quality and price without inventing craftsmanship.',
+    compositionRequirement: 'Build one decisive macro composition around the verified detail, with enough surrounding product context to identify where that detail belongs. Keep critical edges and construction relationships intact; do not isolate, enlarge, duplicate, or redesign the feature.',
+    cameraRequirement: 'Phase One XF IQ4 150MP with Schneider Kreuznach 120mm Macro LS lens, ISO 50, f/11, geared tripod head, calibrated focus stack across the complete feature, and natural high-resolution microtexture without digital oversharpening.',
+    lightingRequirement: 'Broncolor Picolite or tightly flagged strip light for controlled raking texture, broad soft fill, negative fill for sculptural depth, polarizer rotation tuned to preserve intentional material highlights, and no clipped reflections.',
+    finishRequirement: 'Truthful tactile detail, precise focus-stack transitions, restrained local contrast, clean dust-free retouching, natural grain and pores, controlled highlights, and no beauty-filter smoothing or exaggerated texture.',
+    negativeRequirement: 'plastic texture, fake craftsmanship, invented construction, duplicated detail, enlarged feature, smeared texture, harsh glare, clipped metal highlights, shallow focus hiding the feature, oversharpening, CGI render',
+  },
+  {
+    slot: 'E14',
+    label: '买家代入场景图',
+    planRequirement: '让目标 Etsy 买家立即想象拥有和使用产品后的生活：选择最匹配受众、用途与审美的真实高端场景，展示可信的人体或空间比例、使用方式和情绪价值，同时保证产品仍是画面第一主角。',
+    promptRequirement: 'Create an aspirational buyer-self-projection lifestyle photograph tailored to the exact Etsy audience and verified real use case. Show believable human or spatial scale, authentic interaction, and emotional reward while keeping the exact product as the clear visual hero.',
+    compositionRequirement: 'Use a natural editorial composition with the product clearly visible at approximately 28-45% of the frame, placed at a strong focal point, unobstructed, and shown at verified real-world scale. A person may provide context but must remain secondary, naturally posed, and never cover or handle the product implausibly.',
+    cameraRequirement: 'Hasselblad X2D 100C with XCD 55V lens, ISO 64, f/5.6, 1/125s, eye-level natural perspective, controlled depth of field that keeps the entire product sharp while allowing only gentle environmental separation.',
+    lightingRequirement: 'Shape existing window or environmental light with a large diffused key, subtle bounce fill, negative fill for dimensionality, and a discreet motivated edge light. Match direction, color temperature, contact shadows, and reflections so the product belongs physically in the scene.',
+    finishRequirement: 'High-end editorial realism with natural skin and material color, believable room scale, quiet styling, no stock-photo posing, no overproduced cinematic haze, and no background element competing with the product.',
+    negativeRequirement: 'generic lifestyle stock photo, product hidden by props, implausible use, wrong audience, distorted anatomy, inaccurate scale, product too small, excessive background blur, cinematic haze, fake interior, CGI render',
+  },
+  {
+    slot: 'E15',
+    label: '送礼决策收口图',
+    planRequirement: '用送礼、纪念时刻或购买决策收口场景推动收藏与下单：优先呈现真实可验证的包装、套装内容、个性化能力或适用场合；若这些信息未提供，则改为展示最能消除犹豫的多用途、完整套装或情绪故事，绝不杜撰礼盒、配件和定制选项。',
+    promptRequirement: 'Create a final conversion-closing photograph around verified gift intent, a meaningful occasion, or the strongest remaining purchase-decision proof. Show packaging, included pieces, personalization, or gifting details only when explicitly verified; otherwise use a truthful keepsake, complete-set, versatility, or emotional-value composition.',
+    compositionRequirement: 'Keep the exact product complete, unobstructed, and approximately 55-70% of the frame. Build one restrained emotional cue around it with no more than two verified or neutral supporting elements. Do not add a box, ribbon, card, accessory, duplicate product, or personalization unless supplied in the product facts or references.',
+    cameraRequirement: 'Phase One XF IQ4 150MP with Schneider Kreuznach 80mm LS lens, ISO 50, f/8, 1/125s, tripod, corrected perspective, complete-product sharpness, and realistic scale.',
+    lightingRequirement: 'Use a large soft key with controlled falloff, shaped fill, subtle warm-neutral practical ambience only when motivated by the scene, flagged specular control, and a clean separation edge without theatrical beams or haze.',
+    finishRequirement: 'Refined emotional commerce photography with quiet luxury, believable materials, accurate product color, natural contact shadows, disciplined props, and a decisive product-first hierarchy that closes the sale without sentimentality or staged gift clichés.',
+    negativeRequirement: 'invented gift box, ribbon, greeting card, invented accessories, unsupported personalization, fake claims, duplicate product, sentimental clutter, product too small, theatrical lighting, artificial haze, CGI render',
+  },
+] as const
+
+const ETSY_LEGACY_ADDITIONAL_PRODUCTION_STANDARD = [
+  'Premium production standard for this appended shot: art-directed by a world-class Etsy conversion strategist and luxury commercial photographer.',
+  'Use a flagship medium-format campaign workflow, museum-grade product styling, category-appropriate elite optics, precise focus control, and a bespoke physical set derived from the product Visual DNA.',
+  'Light with a masterfully controlled multi-light studio setup: large diffused key, shaped fill, subtle separation or rim light, negative fill where useful, accurate color management, and highlight control tailored to the real material and finish.',
+].join(' ')
+
+const ETSY_LEGACY_ADDITIONAL_PROMPT_REQUIREMENTS = [
+  'Mandatory role: create a scroll-stopping Etsy cover image that remains instantly readable at small search-thumbnail size. Give the exact product unmistakable visual dominance, a powerful but refined focal hierarchy, premium handmade-brand desire, and a bespoke product-specific scene. Do not use text overlays, promotional graphics, badges, or a generic marketplace template.',
+  'Mandatory role: create an elegant, conversion-focused size and scale image. Show only verified dimensions, capacity, weight, quantity, or specifications supplied in the product facts; never invent a number. Use refined measurement lines, clean spatial hierarchy, accurate proportions, and a believable universal scale cue when numeric dimensions are unavailable.',
+  'Mandatory role: create a world-class craftsmanship and value-proof macro image. Reveal the verified material, texture, handmade evidence, finish, joinery, surface treatment, or construction detail that most strongly justifies quality and price. Use meticulous focus stacking, controlled specular highlights, tactile micro-contrast, and truthful detail without inventing craftsmanship.',
+  'Mandatory role: create an aspirational buyer-self-projection lifestyle image tailored to the exact Etsy audience and real use case. Show believable human or spatial scale, authentic interaction, emotional reward, and a premium editorial environment while keeping the exact product as the undisputed hero.',
+  'Mandatory role: create a final conversion-closing image built around gift intent, a meaningful occasion, or the strongest remaining purchase-decision proof. Show packaging, included pieces, personalization, or gifting details only when verified. Otherwise adapt to a truthful versatility, complete-set, keepsake, or emotional-story composition that removes buyer hesitation without inventing extras.',
+]
+
+function getEtsyAdditionalShotBrief(slot?: string | null) {
+  const normalizedSlot = slot?.trim().toUpperCase()
+  return ETSY_ADDITIONAL_SHOT_BRIEFS.find((brief) => brief.slot === normalizedSlot)
+}
+
+function stripLegacyEtsyAdditionalPromptBoilerplate(prompt: string): string {
+  const legacyBlocks = [
+    ...ETSY_ADDITIONAL_SHOT_BRIEFS.map((brief) => brief.promptRequirement),
+    ...ETSY_LEGACY_ADDITIONAL_PROMPT_REQUIREMENTS,
+    ETSY_LEGACY_ADDITIONAL_PRODUCTION_STANDARD,
+    `Mandatory technical photography parameters: ${ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS}.`,
+    `${ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS}.`,
+    ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS,
+  ]
+
+  return legacyBlocks
+    .reduce((value, block) => value.split(block).join(' '), prompt)
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function getEtsyVisualDnaBlock(seriesStyleGuide?: string | null): string {
+  return seriesStyleGuide?.trim().split(/\n\s*\n/, 1)[0]?.trim() ?? ''
+}
+
+function mergeEtsyNegativePrompts(...values: Array<string | undefined>): string {
+  const seen = new Set<string>()
+  return values
+    .flatMap((value) => value?.split(',') ?? [])
+    .map((value) => value.trim())
+    .filter((value) => {
+      if (!value) return false
+      const key = value.toLocaleLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .join(', ')
+}
+
 export function getEtsyImageSlots(): string[] {
   return Array.from({ length: ETSY_SHOT_COUNT }, (_, index) => `E${String(index + 1).padStart(2, '0')}`)
 }
@@ -349,6 +461,7 @@ export function buildAmazonPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'ne
 }
 
 export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'negativePrompt'> & {
+  slot?: string | null
   seriesStyleGuide?: string | null
   styleReferenceAttached?: boolean
   styleDensityMode?: AmazonStyleDensityMode
@@ -358,6 +471,42 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
     palette: string[]
   } | null
 }): string {
+  const additionalBrief = getEtsyAdditionalShotBrief(plan.slot)
+  if (additionalBrief) {
+    const visualDnaBlock = getEtsyVisualDnaBlock(plan.seriesStyleGuide)
+    const productSpecificPlan = stripLegacyEtsyAdditionalPromptBoilerplate(plan.prompt)
+    return formatPromptBlock({
+      ...plan,
+      prompt: [
+        `Create one production-ready Etsy conversion image for ${additionalBrief.slot} ${additionalBrief.label}.`,
+        [
+          'PRODUCT REFERENCE LOCK (absolute priority):',
+          '- Treat the supplied product reference image or images as the sole authority for product geometry, proportions, construction, motif placement, material boundaries, color, finish, quantity, and scale.',
+          '- Rebuild only the environment around the product. Match the referenced product as closely as possible instead of reinterpreting it from text.',
+          '- Preserve exact relative sizes and positions of every visible component. Do not enlarge the hero detail, simplify the silhouette, move decorative elements, alter spacing, or make the product more symmetrical.',
+          '- The selected style reference controls only the surrounding art direction; it must never alter the product itself.',
+        ].join('\n'),
+        visualDnaBlock ? `VERIFIED PRODUCT FACTS:\n${visualDnaBlock}` : '',
+        `SHOT OBJECTIVE:\n${additionalBrief.promptRequirement}`,
+        productSpecificPlan ? `PRODUCT-SPECIFIC SCENE PLAN:\n${productSpecificPlan}` : '',
+        `COMPOSITION:\n${additionalBrief.compositionRequirement}`,
+        `CAMERA AND OPTICS:\n${additionalBrief.cameraRequirement}`,
+        `LIGHTING:\n${additionalBrief.lightingRequirement}`,
+        `FINISH AND QUALITY CONTROL:\n${additionalBrief.finishRequirement}`,
+        'FINAL PRODUCT CHECK: product identity, geometry, component positions, dimensions, material, color, finish, and quantity must match the product references before any aesthetic consideration. The result must look like a real commissioned photograph, not a 3D render or generic AI image.',
+        'No marketplace badges, fake reviews, prices, coupons, sale stickers, watermarks, QR codes, or UI screenshots.',
+      ].filter(Boolean).join('\n\n'),
+      negativePrompt: mergeEtsyNegativePrompts(
+        plan.negativePrompt,
+        additionalBrief.negativeRequirement,
+        'altered product geometry, changed component placement, enlarged motif, redesigned product, wrong material, wrong color, wrong quantity, floating object, malformed edges, AI artifacts',
+      ),
+      seriesStyleGuide: null,
+      marketplaceId: undefined,
+      includeDensityGuide: false,
+    })
+  }
+
   return formatPromptBlock({
     ...plan,
     prompt: [

@@ -11,6 +11,7 @@ import { getApiErrorMessage } from './imageApiShared'
 import type { AmazonPromptDraft } from './amazonPrompt'
 import {
   DEFAULT_LISTING_IMAGE_COUNT,
+  ETSY_ADDITIONAL_SHOT_BRIEFS,
   ETSY_ORIGINAL_SHOT_COUNT,
   ETSY_SHOT_COUNT,
   ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS,
@@ -71,50 +72,6 @@ const PRODUCT_REFERENCE_FACTS_ONLY_PLANNER_GUIDE = [
   '- seriesStyleGuide should preserve cross-image product consistency, factual visual continuity, copy hierarchy, and product appearance only; it must not lock the final palette, typography, background, lighting mood, or decorative system because the user-selected preset style controls those during image generation.',
 ].join('\n')
 
-const ETSY_ADDITIONAL_SHOT_BRIEFS = [
-  {
-    slot: 'E11',
-    label: '吸睛首页图',
-    planRequirement: '打造一张能在 Etsy 搜索缩略图中立刻抓住买家视线的首屏主图：产品必须一眼可识别、主体占比明确、层次干净、情绪强烈且具高级手作品牌感；场景必须依据该产品的视觉 DNA 定制，不使用文字贴纸、促销角标或通用模板。',
-    promptRequirement: 'Mandatory role: create a scroll-stopping Etsy cover image that remains instantly readable at small search-thumbnail size. Give the exact product unmistakable visual dominance, a powerful but refined focal hierarchy, premium handmade-brand desire, and a bespoke product-specific scene. Do not use text overlays, promotional graphics, badges, or a generic marketplace template.',
-    negativeRequirement: 'weak thumbnail impact, tiny product, confusing focal point, generic stock scene, text overlay, promotional badge',
-  },
-  {
-    slot: 'E12',
-    label: '尺寸规格图',
-    planRequirement: '制作清晰、优雅、可信的尺寸与比例图，只能使用用户资料中已验证的尺寸、容量、重量或规格；以简洁测量线、比例参照和易读层级减少购买疑虑。若缺少数字尺寸，不得编造，改用真实通用参照表达比例，并在中文策划中注明需要卖家确认数字。',
-    promptRequirement: 'Mandatory role: create an elegant, conversion-focused size and scale image. Show only verified dimensions, capacity, weight, quantity, or specifications supplied in the product facts; never invent a number. Use refined measurement lines, clean spatial hierarchy, accurate proportions, and a believable universal scale cue when numeric dimensions are unavailable.',
-    negativeRequirement: 'invented dimensions, false measurements, unreadable labels, warped proportions, cluttered infographic, misleading scale',
-  },
-  {
-    slot: 'E13',
-    label: '匠心细节价值图',
-    planRequirement: '用顶级微距商业摄影证明产品价值，聚焦最能支撑价格与品质感的材质、纹理、手工痕迹、连接结构或表面工艺；通过精准控光、焦点堆栈和细腻高光建立买家信任，但绝不虚构不存在的工艺。',
-    promptRequirement: 'Mandatory role: create a world-class craftsmanship and value-proof macro image. Reveal the verified material, texture, handmade evidence, finish, joinery, surface treatment, or construction detail that most strongly justifies quality and price. Use meticulous focus stacking, controlled specular highlights, tactile micro-contrast, and truthful detail without inventing craftsmanship.',
-    negativeRequirement: 'plastic texture, fake craftsmanship, invented construction, smeared detail, harsh glare, shallow focus hiding the feature',
-  },
-  {
-    slot: 'E14',
-    label: '买家代入场景图',
-    planRequirement: '让目标 Etsy 买家立即想象拥有和使用产品后的生活：选择最匹配受众、用途与审美的真实高端场景，展示可信的人体或空间比例、使用方式和情绪价值，同时保证产品仍是画面第一主角。',
-    promptRequirement: 'Mandatory role: create an aspirational buyer-self-projection lifestyle image tailored to the exact Etsy audience and real use case. Show believable human or spatial scale, authentic interaction, emotional reward, and a premium editorial environment while keeping the exact product as the undisputed hero.',
-    negativeRequirement: 'generic lifestyle stock photo, product hidden by props, implausible use, wrong audience, distorted anatomy, inaccurate scale',
-  },
-  {
-    slot: 'E15',
-    label: '送礼决策收口图',
-    planRequirement: '用送礼、纪念时刻或购买决策收口场景推动收藏与下单：优先呈现真实可验证的包装、套装内容、个性化能力或适用场合；若这些信息未提供，则改为展示最能消除犹豫的多用途、完整套装或情绪故事，绝不杜撰礼盒、配件和定制选项。',
-    promptRequirement: 'Mandatory role: create a final conversion-closing image built around gift intent, a meaningful occasion, or the strongest remaining purchase-decision proof. Show packaging, included pieces, personalization, or gifting details only when verified. Otherwise adapt to a truthful versatility, complete-set, keepsake, or emotional-story composition that removes buyer hesitation without inventing extras.',
-    negativeRequirement: 'invented gift box, invented accessories, unsupported personalization, fake claims, extra products, sentimental clutter',
-  },
-] as const
-
-const ETSY_ADDITIONAL_PREMIUM_PRODUCTION_STANDARD = [
-  'Premium production standard for this appended shot: art-directed by a world-class Etsy conversion strategist and luxury commercial photographer.',
-  'Use a flagship medium-format campaign workflow, museum-grade product styling, category-appropriate elite optics, precise focus control, and a bespoke physical set derived from the product Visual DNA.',
-  'Light with a masterfully controlled multi-light studio setup: large diffused key, shaped fill, subtle separation or rim light, negative fill where useful, accurate color management, and highlight control tailored to the real material and finish.',
-].join(' ')
-
 function applyEtsyAdditionalShotBrief(plan: AmazonImagePlan, index: number): AmazonImagePlan {
   const brief = ETSY_ADDITIONAL_SHOT_BRIEFS[index - ETSY_ORIGINAL_SHOT_COUNT]
   if (!brief) return plan
@@ -124,7 +81,6 @@ function applyEtsyAdditionalShotBrief(plan: AmazonImagePlan, index: number): Ama
     slot: brief.slot,
     label: brief.label,
     planMarkdown: [plan.planMarkdown, `**新增固定镜头要求：** ${brief.planRequirement}`].filter(Boolean).join('\n\n'),
-    prompt: [plan.prompt, brief.promptRequirement, ETSY_ADDITIONAL_PREMIUM_PRODUCTION_STANDARD].filter(Boolean).join('\n\n'),
     negativePrompt: [plan.negativePrompt, brief.negativeRequirement].filter(Boolean).join(', '),
   }
 }
@@ -935,10 +891,11 @@ function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft) {
     `Preserve the original ${ETSY_ORIGINAL_SHOT_COUNT}-shot behavior for E01-E10: they must remain a strategic mix of hero/clean listing, macro/detail, lifestyle/in-situ, and atmospheric/creative images, with their exact order and concepts uniquely chosen for this product. Do not replace or compress these original ten shots.`,
     'Append these five additional conversion shots after the original ten, in this exact order:',
     ...ETSY_ADDITIONAL_SHOT_BRIEFS.map((brief) => `${brief.slot} — ${brief.label}: ${brief.promptRequirement}`),
-    `For E11-E15, also follow this production requirement: ${ETSY_ADDITIONAL_PREMIUM_PRODUCTION_STANDARD}`,
+    'For E11-E15, imagePlans.prompt must contain only the product-specific scene concept, verified product attributes, and the truthful use or selling context. Do not add camera bodies, lens settings, lighting boilerplate, rendering buzzwords, generic quality suffixes, or repeat the fixed shot brief; the application injects a calibrated production specification for each appended shot.',
     'For each imagePlans item, label the shot strategy clearly and write planMarkdown as: **[Shot Strategy]:** followed by a specific, creative scene description tailored exactly to this product.',
     'Every imagePlans.prompt must explicitly repeat the locked physical attributes—material, real color, texture, finish, silhouette, proportions, construction, and included details—so the image model cannot redesign the product.',
-    `Every imagePlans.prompt must include this exact mandatory technical style: ${ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS}.`,
+    `For E01-E10 only, every imagePlans.prompt must include this exact mandatory technical style: ${ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS}.`,
+    'For E11-E15, do not include that shared 100mm f/2.8 technical style. Each of those five shots receives its own camera, aperture, perspective, focus, lighting, composition, and retouching specification after planning.',
     'Prompts and negative prompts must be in English. planMarkdown and UI labels should be concise Simplified Chinese.',
     'Keep scenes commercially useful for Etsy. Avoid marketplace badges, fake reviews, prices, coupons, sale stickers, watermarks, QR codes, and unsupported claims.',
     'Return one seriesStyleGuide in English that reinforces only product consistency and a cohesive bespoke campaign derived from the Visual DNA.',
