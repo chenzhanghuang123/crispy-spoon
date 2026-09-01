@@ -416,7 +416,7 @@ function getEtsyPlannerChecks(
     {
       label: '风格参考',
       status: hasStyleReference ? 'ready' : 'warning',
-      detail: hasStyleReference ? '已选择视觉风格参考' : '可选择风格参考统一10张氛围',
+      detail: hasStyleReference ? '已选择视觉风格参考' : '可选择风格参考统一15张氛围',
     },
   ]
 }
@@ -667,7 +667,7 @@ export default function AmazonPlanner() {
         ? {
             target: 'planner-action',
             message: plannerMode === 'etsy'
-              ? '下一步：点击 Etsy策划生成 Visual DNA 与动态10镜头方案'
+              ? '下一步：点击 Etsy策划生成 Visual DNA 与15镜头方案（原10张 + 新增5张）'
               : plannerMode === 'aplus' ? '下一步：点击 AI策划A+ 生成模块方案' : '下一步：点击 AI策划生成逐张方案',
           }
         : seriesStyleReferenceNeeded && !hasStyleReference
@@ -675,7 +675,7 @@ export default function AmazonPlanner() {
               target: 'style-choice',
               message: isLoadingStylePreset
                 ? '正在加载风格参考图'
-                : plannerMode === 'etsy' ? '下一步：选择风格参考，统一10张Etsy大片氛围' : '下一步：选择一套风格参考，统一附图和 A+ 视觉',
+                : plannerMode === 'etsy' ? '下一步：选择风格参考，统一15张Etsy大片氛围' : '下一步：选择一套风格参考，统一附图和 A+ 视觉',
             }
           : !hasSelectedPlan
             ? {
@@ -2119,7 +2119,7 @@ export default function AmazonPlanner() {
               {isEtsyListingMode
                 ? '此页面只生成 Etsy Listing 文案，不生成图片。联网能力可用时会验证当前关键词与市场术语；不可用时会明确标注。'
                 : isEtsyImageMode
-                  ? 'Phase 1 使用策划配置生成 Visual DNA 与10镜头蓝图；Phase 2 点击提交生成时才调用生图配置。'
+                  ? 'Phase 1 使用策划配置生成 Visual DNA 与15镜头蓝图（原10张 + 新增5张）；Phase 2 点击提交生成时才调用生图配置。'
                   : 'AI策划使用设置中的策划配置，生图配置保持不变。'}
             </div>
             {plannerUsesOfficialDeepSeek && (
@@ -2798,7 +2798,7 @@ export default function AmazonPlanner() {
               )}
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div>
-                  <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">{plannerMode === 'etsy' ? 'PART B: THE DYNAMIC 10-SHOT BESPOKE PLAN' : '逐张策划'}</div>
+                  <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">{plannerMode === 'etsy' ? 'PART B: THE DYNAMIC 15-SHOT BESPOKE PLAN' : '逐张策划'}</div>
                   <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
                     {plannerMode === 'etsy' ? '10个镜头根据当前产品动态设计；选择镜头后可直接进入 Phase 2 实际生图。' : '选择图片位后，Prompt Preview 和生成按钮会切换到对应提示词。'}
                   </div>
@@ -3004,7 +3004,7 @@ export default function AmazonPlanner() {
               value={plannerMode === 'aplus' && !selectedAPlusPlan
                 ? '请先点击 AI策划A+，再在右侧选择一个 A+ 模块。'
                 : plannerMode === 'etsy' && !selectedPlan
-                  ? '请先填写产品描述并点击 Etsy策划，AI 会生成 Visual DNA 与动态10镜头方案。'
+                  ? '请先填写产品描述并点击 Etsy策划，AI 会生成 Visual DNA 与15镜头方案（原10张 + 新增5张）。'
                   : activePlanPreview || '请先粘贴 Listing 并点击 AI策划，LLM 会生成中文策划、英文 Prompt 和 Negative Prompt。'}
               className={`ios-field w-full resize-none p-3 font-mono text-xs leading-relaxed text-gray-700 dark:text-gray-200 ${hasSelectedPlan ? 'h-[430px]' : 'h-36 sm:h-44'}`}
               spellCheck={false}

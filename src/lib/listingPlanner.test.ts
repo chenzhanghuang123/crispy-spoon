@@ -13,6 +13,8 @@ import {
   buildAmazonAPlusPlanPrompt,
   buildAmazonPlanPrompt,
   buildEtsyPlanPrompt,
+  ETSY_ORIGINAL_SHOT_COUNT,
+  ETSY_SHOT_COUNT,
   ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS,
   formatAPlusModuleText,
   insertAPlusModuleSpecAfter,
@@ -403,7 +405,7 @@ function createEtsyPayload() {
 }
 
 describe('callAmazonPlannerApi', () => {
-  it('uses the Etsy Visual DNA schema and returns a dynamic ten-shot plan', async () => {
+  it('preserves the original Etsy ten-shot plan and appends five fixed conversion shots', async () => {
     const apiPayload = createEtsyPayload()
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({
       output_text: JSON.stringify(apiPayload),
@@ -432,10 +434,33 @@ describe('callAmazonPlannerApi', () => {
     expect(body.instructions).toContain("World-Class Adaptive Art Director and AI Photographer")
     expect(body.instructions).toContain('Visual DNA Lock is crucial')
     expect(body.instructions).toContain('Never use a reusable fixed scene template')
+    expect(body.instructions).toContain('Preserve the original 10-shot behavior for E01-E10')
+    expect(body.instructions).toContain('E11 — 吸睛首页图')
+    expect(body.instructions).toContain('E12 — 尺寸规格图')
+    expect(body.instructions).toContain('E13 — 匠心细节价值图')
+    expect(body.instructions).toContain('E14 — 买家代入场景图')
+    expect(body.instructions).toContain('E15 — 送礼决策收口图')
+    expect(body.instructions).toContain('flagship medium-format campaign workflow')
     expect(body.instructions).toContain(ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS)
-    expect(body.input[0].content[0].text).toContain('dynamic 10-shot bespoke photoshoot blueprint')
+    expect(body.input[0].content[0].text).toContain(`dynamic ${ETSY_SHOT_COUNT}-shot bespoke photoshoot blueprint`)
     expect(result.mode).toBe('etsy')
-    expect(result.plans).toHaveLength(10)
+    expect(result.plans).toHaveLength(ETSY_SHOT_COUNT)
+    expect(result.plans.slice(0, ETSY_ORIGINAL_SHOT_COUNT).map((plan) => plan.prompt)).toEqual(
+      apiPayload.imagePlans.slice(0, ETSY_ORIGINAL_SHOT_COUNT).map((plan) => plan.prompt),
+    )
+    expect(result.plans.slice(ETSY_ORIGINAL_SHOT_COUNT).map((plan) => [plan.slot, plan.label])).toEqual([
+      ['E11', '吸睛首页图'],
+      ['E12', '尺寸规格图'],
+      ['E13', '匠心细节价值图'],
+      ['E14', '买家代入场景图'],
+      ['E15', '送礼决策收口图'],
+    ])
+    expect(result.plans[10]?.prompt).toContain('scroll-stopping Etsy cover image')
+    expect(result.plans[11]?.prompt).toContain('never invent a number')
+    expect(result.plans[12]?.prompt).toContain('craftsmanship and value-proof macro image')
+    expect(result.plans[13]?.prompt).toContain('buyer-self-projection lifestyle image')
+    expect(result.plans[14]?.prompt).toContain('final conversion-closing image')
+    expect(result.plans[14]?.prompt).toContain('world-class Etsy conversion strategist')
     expect(result.etsyVisualDna?.materialTextureFocus).toContain('Speckled stoneware')
     expect(result.seriesStyleGuide).toContain('Product Name/Type: Hand-thrown ceramic mug')
   })

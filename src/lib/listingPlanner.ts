@@ -241,7 +241,9 @@ export function getAmazonListingImageSlots(count: unknown = DEFAULT_LISTING_IMAG
   ]
 }
 
-export const ETSY_SHOT_COUNT = 10
+export const ETSY_ORIGINAL_SHOT_COUNT = 10
+export const ETSY_ADDITIONAL_SHOT_COUNT = 5
+export const ETSY_SHOT_COUNT = ETSY_ORIGINAL_SHOT_COUNT + ETSY_ADDITIONAL_SHOT_COUNT
 export const ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS = 'Shot on Hasselblad X2D 100C, 100mm lens, f/2.8, 8k resolution, photorealistic, hyper-detailed, cinematic lighting, volumetric light, raytracing, global illumination, 1:1 aspect ratio'
 
 export function getEtsyImageSlots(): string[] {
