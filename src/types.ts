@@ -264,6 +264,7 @@ export interface AmazonPlannerSessionImagePlan {
   planMarkdown: string
   prompt: string
   negativePrompt: string
+  photographyDecision?: EtsyShotPhotographyDecision
 }
 
 export interface EtsyVisualDna {
@@ -271,6 +272,33 @@ export interface EtsyVisualDna {
   materialTextureFocus: string
   colorPaletteLightingMood: string
   brandAestheticTargetAudience: string
+}
+
+export interface EtsyPhotographyAnalysis {
+  materialBehavior: string
+  formAndScale: string
+  criticalDetails: string
+  functionAndInteraction: string
+  captureChallenges: string
+  campaignStrategy: string
+}
+
+export interface EtsyShotPhotographyDecision {
+  productSuitability: string
+  angleFamily: string
+  angle: string
+  shotScale: string
+  framing: string
+  cameraSystem: string
+  lensClass: string
+  lens: string
+  exposure: string
+  focusStrategy: string
+  lightingFamily: string
+  lighting: string
+  sceneFamily: string
+  scene: string
+  differentiation: string
 }
 
 export interface EtsyListingDetails {
@@ -356,6 +384,7 @@ export interface AmazonPlannerSession {
     etsy?: string
   }
   etsyVisualDna?: EtsyVisualDna | null
+  etsyPhotographyAnalysis?: EtsyPhotographyAnalysis | null
   etsyListingDetails?: EtsyListingDetails | null
   styleCandidates: AmazonPlannerSessionStyleCandidate[]
   styleImages: AmazonPlannerSessionStyleImage[]

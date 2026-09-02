@@ -1,5 +1,5 @@
 import type { AmazonImageKind, AmazonPromptDraft } from './amazonPrompt'
-import type { AmazonStyleDensityMode } from '../types'
+import type { AmazonStyleDensityMode, EtsyShotPhotographyDecision } from '../types'
 import { calculateImageSize, type SizeTier } from './size'
 import { getAmazonMarketplace, type AmazonMarketplaceId } from './amazonMarketplaces'
 
@@ -44,6 +44,7 @@ export interface AmazonImagePlan {
   planMarkdown: string
   prompt: string
   negativePrompt: string
+  photographyDecision?: EtsyShotPhotographyDecision
 }
 
 export interface AmazonAPlusModuleSpec {
@@ -215,6 +216,15 @@ const STYLE_REFERENCE_GUARD = [
   '- Follow the image task, layout density, and negative prompt sections for the actual content and arrangement.',
 ].join('\n')
 
+const ETSY_ADAPTIVE_STYLE_REFERENCE_GUARD = [
+  'Etsy style reference rule:',
+  '- The last input image is a hidden style reference selected by the user.',
+  '- Use it only for the surrounding set-design language, supporting palette, prop styling, contrast character, and cohesive campaign polish.',
+  '- The AI photographer capture decision is higher priority for camera position, product orientation, shot scale, optics, exposure, focus plane, lighting geometry, reflection control, and the actual scene content.',
+  '- Never let the style reference change the product material, finish, color, geometry, proportions, components, quantity, text, logo, or verified details.',
+  '- Do not copy its placeholder words, fixed layout, swatch positions, exact composition, product arrangement, product count, props, or scene.',
+].join('\n')
+
 export const DEFAULT_LISTING_IMAGE_COUNT = 7
 export const MIN_LISTING_IMAGE_COUNT = 7
 export const MAX_LISTING_IMAGE_COUNT = 12
@@ -358,6 +368,23 @@ function mergeEtsyNegativePrompts(...values: Array<string | undefined>): string 
     .join(', ')
 }
 
+function formatEtsyPhotographyDecision(decision: EtsyShotPhotographyDecision): string {
+  return [
+    `Why this is right for this product: ${decision.productSuitability}`,
+    `Viewpoint: ${decision.angleFamily} — ${decision.angle}`,
+    `Shot scale and framing: ${decision.shotScale} — ${decision.framing}`,
+    `Camera system: ${decision.cameraSystem}`,
+    `Lens: ${decision.lensClass} — ${decision.lens}`,
+    `Exposure and support: ${decision.exposure}`,
+    `Focus strategy: ${decision.focusStrategy}`,
+    `Lighting family: ${decision.lightingFamily}`,
+    `Lighting execution: ${decision.lighting}`,
+    `Scene family: ${decision.sceneFamily}`,
+    `Scene execution: ${decision.scene}`,
+    `Difference from the other fourteen shots: ${decision.differentiation}`,
+  ].join('\n')
+}
+
 export function getEtsyImageSlots(): string[] {
   return Array.from({ length: ETSY_SHOT_COUNT }, (_, index) => `E${String(index + 1).padStart(2, '0')}`)
 }
@@ -415,17 +442,26 @@ function formatPromptBlock(options: {
     palette: string[]
   } | null
   includeDensityGuide?: boolean
+  etsyAdaptivePhotography?: boolean
 }) {
   const selectedVisualStyle = options.styleReferenceAttached ? options.selectedVisualStyle : null
   const selectedStyleBlock = selectedVisualStyle
-    ? [
-      'Selected visual style (highest priority):',
-      `- Style reference: ${selectedVisualStyle.label}.`,
-      `- Style direction: ${selectedVisualStyle.description}`,
-      selectedVisualStyle.palette.length ? `- Palette anchors: ${selectedVisualStyle.palette.join(', ')}.` : '',
-      '- This selected visual style is the highest-priority visual system for background, palette, typography, lighting, decorative accents, material finish, and information-panel styling.',
-      '- If the image task prompt or Series style guide contains a conflicting aesthetic, background mood, color palette, typography direction, or decorative accent, override that conflict with this selected visual style while preserving product facts and required copy.',
-    ].filter(Boolean).join('\n')
+    ? options.etsyAdaptivePhotography
+      ? [
+        'Selected Etsy campaign style (surrounding art direction only):',
+        `- Style reference: ${selectedVisualStyle.label}.`,
+        `- Style direction: ${selectedVisualStyle.description}`,
+        selectedVisualStyle.palette.length ? `- Supporting palette anchors: ${selectedVisualStyle.palette.join(', ')}.` : '',
+        '- Apply this style to the environment and campaign finish without overriding the product-specific capture decision or altering the real product.',
+      ].filter(Boolean).join('\n')
+      : [
+        'Selected visual style (highest priority):',
+        `- Style reference: ${selectedVisualStyle.label}.`,
+        `- Style direction: ${selectedVisualStyle.description}`,
+        selectedVisualStyle.palette.length ? `- Palette anchors: ${selectedVisualStyle.palette.join(', ')}.` : '',
+        '- This selected visual style is the highest-priority visual system for background, palette, typography, lighting, decorative accents, material finish, and information-panel styling.',
+        '- If the image task prompt or Series style guide contains a conflicting aesthetic, background mood, color palette, typography direction, or decorative accent, override that conflict with this selected visual style while preserving product facts and required copy.',
+      ].filter(Boolean).join('\n')
     : ''
   const seriesStyleGuideLabel = selectedStyleBlock
     ? 'Series style guide (lower priority than the selected visual style):'
@@ -440,7 +476,9 @@ function formatPromptBlock(options: {
     options.negativePrompt?.trim()
       ? `Negative prompt:\n${options.negativePrompt.trim()}`
       : '',
-    options.styleReferenceAttached ? STYLE_REFERENCE_GUARD : '',
+    options.styleReferenceAttached
+      ? options.etsyAdaptivePhotography ? ETSY_ADAPTIVE_STYLE_REFERENCE_GUARD : STYLE_REFERENCE_GUARD
+      : '',
   ].filter(Boolean)
 
   return sections.join('\n\n')
@@ -460,7 +498,7 @@ export function buildAmazonPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'ne
   return formatPromptBlock(plan)
 }
 
-export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'negativePrompt'> & {
+export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'negativePrompt' | 'photographyDecision'> & {
   slot?: string | null
   seriesStyleGuide?: string | null
   styleReferenceAttached?: boolean
@@ -472,13 +510,13 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
   } | null
 }): string {
   const additionalBrief = getEtsyAdditionalShotBrief(plan.slot)
-  if (additionalBrief) {
+  if (plan.photographyDecision) {
     const visualDnaBlock = getEtsyVisualDnaBlock(plan.seriesStyleGuide)
     const productSpecificPlan = stripLegacyEtsyAdditionalPromptBoilerplate(plan.prompt)
     return formatPromptBlock({
       ...plan,
       prompt: [
-        `Create one production-ready Etsy conversion image for ${additionalBrief.slot} ${additionalBrief.label}.`,
+        `Create one production-ready Etsy campaign photograph${plan.slot ? ` for ${plan.slot}${additionalBrief ? ` ${additionalBrief.label}` : ''}` : ''}.`,
         [
           'PRODUCT REFERENCE LOCK (absolute priority):',
           '- Treat the supplied product reference image or images as the sole authority for product geometry, proportions, construction, motif placement, material boundaries, color, finish, quantity, and scale.',
@@ -487,20 +525,43 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
           '- The selected style reference controls only the surrounding art direction; it must never alter the product itself.',
         ].join('\n'),
         visualDnaBlock ? `VERIFIED PRODUCT FACTS:\n${visualDnaBlock}` : '',
+        additionalBrief ? `SHOT OBJECTIVE:\n${additionalBrief.promptRequirement}` : '',
+        productSpecificPlan ? `PRODUCT-SPECIFIC SCENE PLAN:\n${productSpecificPlan}` : '',
+        `AI PHOTOGRAPHER'S PRODUCT-SPECIFIC CAPTURE DECISION:\n${formatEtsyPhotographyDecision(plan.photographyDecision)}`,
+        additionalBrief ? `CONVERSION COMPOSITION GUARDRAILS:\n${additionalBrief.compositionRequirement}` : '',
+        additionalBrief ? `FINISH AND QUALITY CONTROL:\n${additionalBrief.finishRequirement}` : 'FINISH AND QUALITY CONTROL:\nWorld-class commissioned commercial photography, physically believable optics and light, accurate color management, natural contact shadows, disciplined retouching, and no generic AI-rendered appearance.',
+        'FINAL PRODUCT CHECK: product identity, geometry, component positions, dimensions, material, color, finish, and quantity must match the product references before any aesthetic consideration. The result must look like a real commissioned photograph, not a 3D render or generic AI image.',
+        'No marketplace badges, fake reviews, prices, coupons, sale stickers, watermarks, QR codes, or UI screenshots.',
+      ].filter(Boolean).join('\n\n'),
+      negativePrompt: mergeEtsyNegativePrompts(
+        plan.negativePrompt,
+        additionalBrief?.negativeRequirement,
+        'altered product geometry, changed component placement, enlarged motif, redesigned product, wrong material, wrong color, wrong quantity, floating object, malformed edges, AI artifacts',
+      ),
+      seriesStyleGuide: null,
+      marketplaceId: undefined,
+      includeDensityGuide: false,
+      etsyAdaptivePhotography: true,
+    })
+  }
+
+  if (additionalBrief) {
+    const visualDnaBlock = getEtsyVisualDnaBlock(plan.seriesStyleGuide)
+    const productSpecificPlan = stripLegacyEtsyAdditionalPromptBoilerplate(plan.prompt)
+    return formatPromptBlock({
+      ...plan,
+      prompt: [
+        `Create one production-ready Etsy conversion image for ${additionalBrief.slot} ${additionalBrief.label}.`,
+        visualDnaBlock ? `VERIFIED PRODUCT FACTS:\n${visualDnaBlock}` : '',
         `SHOT OBJECTIVE:\n${additionalBrief.promptRequirement}`,
         productSpecificPlan ? `PRODUCT-SPECIFIC SCENE PLAN:\n${productSpecificPlan}` : '',
         `COMPOSITION:\n${additionalBrief.compositionRequirement}`,
         `CAMERA AND OPTICS:\n${additionalBrief.cameraRequirement}`,
         `LIGHTING:\n${additionalBrief.lightingRequirement}`,
         `FINISH AND QUALITY CONTROL:\n${additionalBrief.finishRequirement}`,
-        'FINAL PRODUCT CHECK: product identity, geometry, component positions, dimensions, material, color, finish, and quantity must match the product references before any aesthetic consideration. The result must look like a real commissioned photograph, not a 3D render or generic AI image.',
-        'No marketplace badges, fake reviews, prices, coupons, sale stickers, watermarks, QR codes, or UI screenshots.',
+        'Legacy plan fallback: preserve the supplied product references exactly and render a real commissioned photograph, not a 3D render or generic AI image.',
       ].filter(Boolean).join('\n\n'),
-      negativePrompt: mergeEtsyNegativePrompts(
-        plan.negativePrompt,
-        additionalBrief.negativeRequirement,
-        'altered product geometry, changed component placement, enlarged motif, redesigned product, wrong material, wrong color, wrong quantity, floating object, malformed edges, AI artifacts',
-      ),
+      negativePrompt: mergeEtsyNegativePrompts(plan.negativePrompt, additionalBrief.negativeRequirement),
       seriesStyleGuide: null,
       marketplaceId: undefined,
       includeDensityGuide: false,

@@ -41,6 +41,32 @@ const SAMPLE_LISTING = [
   '- Includes reusable straw and cleaning brush, BPA free materials',
 ].join('\n')
 
+const TEST_ANGLE_FAMILIES = ['front-orthographic', 'three-quarter', 'side-profile', 'rear', 'top-down', 'low-angle', 'high-angle', 'macro-detail', 'environmental-wide', 'functional-pov'] as const
+const TEST_SHOT_SCALES = ['extreme-macro', 'detail-close-up', 'full-product', 'product-in-context', 'wide-environment'] as const
+const TEST_LENS_CLASSES = ['ultra-wide', 'wide', 'normal', 'short-telephoto', 'macro', 'telephoto', 'tilt-shift'] as const
+const TEST_LIGHTING_FAMILIES = ['soft-studio', 'raking-texture', 'cross-polarized', 'backlit-translucency', 'window-daylight', 'hard-directional', 'mixed-practical', 'edge-defined-low-key', 'high-key-shadowless'] as const
+const TEST_SCENE_FAMILIES = ['seamless-studio', 'editorial-still-life', 'material-macro', 'scale-infographic', 'craft-workbench', 'active-use', 'contextual-interior', 'architectural-environment', 'nature-outdoor', 'gift-or-keepsake'] as const
+
+function createPhotographyDecision(index = 0) {
+  return {
+    productSuitability: `This capture reveals verified product evidence ${index + 1}.`,
+    angleFamily: TEST_ANGLE_FAMILIES[index % TEST_ANGLE_FAMILIES.length],
+    angle: `Product-specific viewpoint ${index + 1} with controlled perspective.`,
+    shotScale: TEST_SHOT_SCALES[index % TEST_SHOT_SCALES.length],
+    framing: `Distinct product occupancy and negative-space plan ${index + 1}.`,
+    cameraSystem: index % 2 ? 'Hasselblad X2D 100C' : 'Phase One XF IQ4 150MP',
+    lensClass: TEST_LENS_CLASSES[index % TEST_LENS_CLASSES.length],
+    lens: `${35 + index * 5}mm premium technical lens selected for this perspective`,
+    exposure: `ISO ${50 + index}, f/${5.6 + index / 10}, tripod-supported calibrated exposure`,
+    focusStrategy: `Product-specific focal-plane strategy ${index + 1}.`,
+    lightingFamily: TEST_LIGHTING_FAMILIES[index % TEST_LIGHTING_FAMILIES.length],
+    lighting: `Distinct material-aware lighting execution ${index + 1}.`,
+    sceneFamily: TEST_SCENE_FAMILIES[index % TEST_SCENE_FAMILIES.length],
+    scene: `Bespoke physically believable scene ${index + 1}.`,
+    differentiation: `Unique angle, scale, optics, light, scene, and selling purpose ${index + 1}.`,
+  }
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
 })
@@ -128,10 +154,12 @@ describe('Amazon prompt builders', () => {
     expect(prompt).not.toContain('Selected visual style')
   })
 
-  it('builds Etsy prompts with a Visual DNA lock and mandatory photography parameters', () => {
+  it('builds Etsy prompts with a Visual DNA lock and a product-specific photography decision', () => {
+    const photographyDecision = createPhotographyDecision(4)
     const prompt = buildEtsyPlanPrompt({
       prompt: 'Hero shot of the exact hand-thrown seafoam ceramic mug on a quiet breakfast table.',
       negativePrompt: 'plastic texture, wrong glaze color, extra handles, watermark',
+      photographyDecision,
       seriesStyleGuide: [
         'Product Name/Type: Hand-thrown ceramic mug',
         'Material & Texture Focus: Speckled stoneware, raw clay foot, glossy seafoam glaze',
@@ -146,33 +174,32 @@ describe('Amazon prompt builders', () => {
       },
     })
 
-    expect(prompt).toContain('Visual DNA Lock')
+    expect(prompt).toContain('VERIFIED PRODUCT FACTS')
     expect(prompt).toContain('Speckled stoneware, raw clay foot, glossy seafoam glaze')
-    expect(prompt).toContain(ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS)
-    expect(prompt).toContain('Do not redesign, recolor, resize, relabel')
-    expect(prompt).toContain('Selected visual style (highest priority):')
+    expect(prompt).toContain("AI PHOTOGRAPHER'S PRODUCT-SPECIFIC CAPTURE DECISION")
+    expect(prompt).toContain(photographyDecision.cameraSystem)
+    expect(prompt).toContain(photographyDecision.lens)
+    expect(prompt).toContain(photographyDecision.lighting)
+    expect(prompt).not.toContain(ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS)
+    expect(prompt).toContain('PRODUCT REFERENCE LOCK (absolute priority)')
+    expect(prompt).toContain('Selected Etsy campaign style (surrounding art direction only):')
+    expect(prompt).toContain('capture decision is higher priority')
     expect(prompt).not.toContain('information-rich Amazon gallery layout')
   })
 
-  it('uses a calibrated camera, composition, focus, and lighting recipe for each appended Etsy shot', () => {
+  it('uses each AI-selected camera, angle, focus, lighting, and scene for appended Etsy shots', () => {
     const legacyProductionStandard = [
       'Premium production standard for this appended shot: art-directed by a world-class Etsy conversion strategist and luxury commercial photographer.',
       'Use a flagship medium-format campaign workflow, museum-grade product styling, category-appropriate elite optics, precise focus control, and a bespoke physical set derived from the product Visual DNA.',
       'Light with a masterfully controlled multi-light studio setup: large diffused key, shaped fill, subtle separation or rim light, negative fill where useful, accurate color management, and highlight control tailored to the real material and finish.',
     ].join(' ')
-    const expected = [
-      ['E11', 'Schneider Kreuznach 80mm LS lens', 'f/8', '70-82% of the frame'],
-      ['E12', 'zero keystone distortion', 'f/11', 'maximum of three verified labels'],
-      ['E13', 'Schneider Kreuznach 120mm Macro LS lens', 'calibrated focus stack', 'controlled raking texture'],
-      ['E14', 'Hasselblad X2D 100C with XCD 55V lens', 'f/5.6', '28-45% of the frame'],
-      ['E15', 'Phase One XF IQ4 150MP', 'f/8', '55-70% of the frame'],
-    ] as const
-
     for (const [index, brief] of ETSY_ADDITIONAL_SHOT_BRIEFS.entries()) {
+      const photographyDecision = createPhotographyDecision(index + ETSY_ORIGINAL_SHOT_COUNT)
       const prompt = buildEtsyPlanPrompt({
         slot: brief.slot,
         prompt: `Bespoke product-specific scene ${index + 1}. ${brief.promptRequirement} ${legacyProductionStandard} ${ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS}.`,
         negativePrompt: 'wrong product, blur',
+        photographyDecision,
         seriesStyleGuide: [
           'Product Name/Type: Exact handmade product',
           'Material & Texture Focus: Verified natural material',
@@ -181,20 +208,22 @@ describe('Amazon prompt builders', () => {
         ].join('\n'),
         styleReferenceAttached: false,
       })
-      const [slot, camera, apertureOrFocus, composition] = expected[index]
 
-      expect(brief.slot).toBe(slot)
       expect(prompt).toContain('PRODUCT REFERENCE LOCK (absolute priority)')
       expect(prompt).toContain(brief.promptRequirement)
-      expect(prompt).toContain(camera)
-      expect(prompt).toContain(apertureOrFocus)
-      expect(prompt).toContain(composition)
+      expect(prompt).toContain(photographyDecision.angle)
+      expect(prompt).toContain(photographyDecision.cameraSystem)
+      expect(prompt).toContain(photographyDecision.lens)
+      expect(prompt).toContain(photographyDecision.focusStrategy)
+      expect(prompt).toContain(photographyDecision.lighting)
+      expect(prompt).toContain(photographyDecision.scene)
       expect(prompt).toContain('Product Name/Type: Exact handmade product')
       expect(prompt).not.toContain('Campaign mood that should not be repeated')
       expect(prompt).not.toContain('100mm lens, f/2.8')
       expect(prompt).not.toContain('raytracing')
       expect(prompt).not.toContain('volumetric light')
       expect(prompt).not.toContain('flagship medium-format campaign workflow')
+      expect(prompt).not.toContain(brief.cameraRequirement)
       expect(prompt.match(new RegExp(brief.promptRequirement.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))).toHaveLength(1)
     }
   })
@@ -439,6 +468,14 @@ function createEtsyPayload() {
       colorPaletteLightingMood: 'True seafoam green, warm morning light that reveals glaze depth',
       brandAestheticTargetAudience: 'Slow-living artisan pottery for craft-conscious Etsy buyers',
     },
+    photographyAnalysis: {
+      materialBehavior: 'Glossy glaze needs broad reflected highlights while the raw clay foot needs gentle raking light.',
+      formAndScale: 'The hand-thrown cylinder, open rim, curved handle, and raw foot need changing elevations and truthful perspective.',
+      criticalDetails: 'Show the speckled clay, glaze boundary, lip, handle join, and throwing marks without inventing decoration.',
+      functionAndInteraction: 'Show comfortable hand scale and believable use as a drinking vessel without adding unsupported accessories.',
+      captureChallenges: 'Control glaze glare, keep the handle profile undistorted, and hold accurate seafoam color across environments.',
+      campaignStrategy: 'Alternate technical, tactile, contextual, and emotional evidence while preserving the exact mug in every frame.',
+    },
     seriesStyleGuide: 'Maintain the exact mug form, glaze boundary, handle proportions, and raw clay foot across all shots.',
     imagePlans: getEtsyImageSlots().map((slot, index) => ({
       slot,
@@ -446,12 +483,13 @@ function createEtsyPayload() {
       planMarkdown: `**${index === 0 ? 'Hero/Main Listing' : 'Adaptive Product Story'}:** 专属场景 ${index + 1}`,
       prompt: `Photograph the exact hand-thrown seafoam ceramic mug with speckled stoneware, glossy seafoam glaze, raw clay foot, and the same handle proportions. Bespoke scene ${index + 1}.`,
       negativePrompt: 'plastic texture, wrong glaze color, extra handles, watermark',
+      photographyDecision: createPhotographyDecision(index),
     })),
   }
 }
 
 describe('callAmazonPlannerApi', () => {
-  it('preserves the original Etsy ten-shot plan and appends five fixed conversion shots', async () => {
+  it('preserves the original Etsy ten-shot plan, appends five conversion shots, and carries adaptive photography decisions', async () => {
     const apiPayload = createEtsyPayload()
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({
       output_text: JSON.stringify(apiPayload),
@@ -480,16 +518,18 @@ describe('callAmazonPlannerApi', () => {
     expect(body.instructions).toContain("World-Class Adaptive Art Director and AI Photographer")
     expect(body.instructions).toContain('Visual DNA Lock is crucial')
     expect(body.instructions).toContain('Never use a reusable fixed scene template')
+    expect(body.instructions).toContain('PRODUCT-SPECIFIC PHOTOGRAPHY DIAGNOSIS')
+    expect(body.instructions).toContain('DIVERSITY MATRIX (mandatory)')
+    expect(body.instructions).toContain('at least 5 angleFamily values')
+    expect(body.instructions).toContain('Do not force one camera, one 100mm lens, or one aperture')
     expect(body.instructions).toContain('Preserve the original 10-shot behavior for E01-E10')
     expect(body.instructions).toContain('E11 — 吸睛首页图')
     expect(body.instructions).toContain('E12 — 尺寸规格图')
     expect(body.instructions).toContain('E13 — 匠心细节价值图')
     expect(body.instructions).toContain('E14 — 买家代入场景图')
     expect(body.instructions).toContain('E15 — 送礼决策收口图')
-    expect(body.instructions).toContain('Do not add camera bodies, lens settings, lighting boilerplate')
-    expect(body.instructions).toContain('For E01-E10 only')
-    expect(body.instructions).toContain('For E11-E15, do not include that shared 100mm f/2.8 technical style')
-    expect(body.instructions).toContain(ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS)
+    expect(body.text.format.schema.properties.photographyAnalysis).toBeTruthy()
+    expect(body.text.format.schema.properties.imagePlans.items.properties.photographyDecision).toBeTruthy()
     expect(body.input[0].content[0].text).toContain(`dynamic ${ETSY_SHOT_COUNT}-shot bespoke photoshoot blueprint`)
     expect(result.mode).toBe('etsy')
     expect(result.plans).toHaveLength(ETSY_SHOT_COUNT)
@@ -505,6 +545,7 @@ describe('callAmazonPlannerApi', () => {
     ])
     expect(result.plans[10]?.prompt).toBe(apiPayload.imagePlans[10]?.prompt)
     expect(result.plans[10]?.planMarkdown).toContain('新增固定镜头要求')
+    expect(result.plans[10]?.photographyDecision?.angle).toBe(apiPayload.imagePlans[10]?.photographyDecision.angle)
     expect(result.plans[11]?.negativePrompt).toContain('invented dimensions')
     const finalHeroPrompt = buildEtsyPlanPrompt({
       ...result.plans[10]!,
@@ -512,10 +553,39 @@ describe('callAmazonPlannerApi', () => {
       styleReferenceAttached: false,
     })
     expect(finalHeroPrompt).toContain('scroll-stopping Etsy cover image')
-    expect(finalHeroPrompt).toContain('Phase One XF IQ4 150MP')
+    expect(finalHeroPrompt).toContain(apiPayload.imagePlans[10]?.photographyDecision.cameraSystem)
+    expect(finalHeroPrompt).toContain(apiPayload.imagePlans[10]?.photographyDecision.lighting)
     expect(finalHeroPrompt).not.toContain('100mm lens, f/2.8')
     expect(result.etsyVisualDna?.materialTextureFocus).toContain('Speckled stoneware')
+    expect(result.etsyPhotographyAnalysis?.captureChallenges).toContain('glaze glare')
     expect(result.seriesStyleGuide).toContain('Product Name/Type: Hand-thrown ceramic mug')
+  })
+
+  it('rejects an Etsy plan when all fifteen shots repeat the same photographic setup', async () => {
+    const apiPayload = createEtsyPayload()
+    apiPayload.imagePlans = apiPayload.imagePlans.map((plan) => ({
+      ...plan,
+      photographyDecision: createPhotographyDecision(0),
+    }))
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({
+      output_text: JSON.stringify(apiPayload),
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug.',
+      baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
+      mode: 'etsy',
+      profile: createDefaultOpenAIProfile({
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'user-api-key',
+        apiMode: 'responses',
+        model: 'gpt-planner-profile',
+      }),
+    })).rejects.toThrow('Etsy 摄影自动判断未通过 15 镜头差异检查')
   })
 
   it('uses Responses API planning with JSON schema and attached reference images', async () => {

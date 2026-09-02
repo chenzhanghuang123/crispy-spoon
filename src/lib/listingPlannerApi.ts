@@ -1,4 +1,10 @@
-import type { ApiProfile, EtsyListingDetails, EtsyVisualDna } from '../types'
+import type {
+  ApiProfile,
+  EtsyListingDetails,
+  EtsyPhotographyAnalysis,
+  EtsyShotPhotographyDecision,
+  EtsyVisualDna,
+} from '../types'
 import { DEFAULT_CHAT_MODEL, DEFAULT_RESPONSES_MODEL, isOfficialDeepSeekPlannerProfile } from './apiProfiles'
 import { formatAmazonAPlusReferenceMaterial, formatAmazonListingReferenceMaterial } from './amazonKnowledge'
 import {
@@ -14,7 +20,6 @@ import {
   ETSY_ADDITIONAL_SHOT_BRIEFS,
   ETSY_ORIGINAL_SHOT_COUNT,
   ETSY_SHOT_COUNT,
-  ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS,
   getAmazonListingImageSlots,
   getEtsyImageSlots,
   getAPlusContentTypeLabel,
@@ -45,6 +50,7 @@ interface PlannerApiPayload {
   sellingPoints?: unknown
   seriesStyleGuide?: unknown
   visualDna?: Partial<Record<keyof EtsyVisualDna, unknown>>
+  photographyAnalysis?: Partial<Record<keyof EtsyPhotographyAnalysis, unknown>>
   imagePlans?: Array<Partial<AmazonImagePlan>>
   aPlusPlans?: Array<Partial<AmazonAPlusPlan>>
 }
@@ -94,6 +100,7 @@ export interface PlannerApiResult {
   aPlusPlans: AmazonAPlusPlan[]
   aPlusType?: APlusContentType
   etsyVisualDna?: EtsyVisualDna | null
+  etsyPhotographyAnalysis?: EtsyPhotographyAnalysis | null
 }
 
 export interface EtsyListingApiResult {
@@ -208,6 +215,49 @@ const ETSY_VISUAL_DNA_SCHEMA = {
   required: ['productNameType', 'materialTextureFocus', 'colorPaletteLightingMood', 'brandAestheticTargetAudience'],
 } as const
 
+const ETSY_PHOTOGRAPHY_ANALYSIS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    materialBehavior: { type: 'string', description: 'How the verified materials reflect, absorb, transmit, scatter, or reveal light, and the lighting implications.' },
+    formAndScale: { type: 'string', description: 'The product geometry, silhouette, depth, scale cues, symmetry or asymmetry, and the viewpoints that reveal them truthfully.' },
+    criticalDetails: { type: 'string', description: 'The verified craftsmanship, texture, finish, construction, controls, connections, or small details that deserve photographic proof.' },
+    functionAndInteraction: { type: 'string', description: 'The verified function, handling, installation, wear, use sequence, or buyer interaction that photography should make immediately understandable.' },
+    captureChallenges: { type: 'string', description: 'Product-specific photographic risks such as glare, transparency, dark-on-dark edges, tiny scale, distortion, moire, reflective metal, or shallow relief, plus how to control them.' },
+    campaignStrategy: { type: 'string', description: 'A concise product-specific strategy for making fifteen images feel cohesive while deliberately varying viewpoint, scale, optics, light, and scene.' },
+  },
+  required: ['materialBehavior', 'formAndScale', 'criticalDetails', 'functionAndInteraction', 'captureChallenges', 'campaignStrategy'],
+} as const
+
+const ETSY_ANGLE_FAMILIES = ['front-orthographic', 'three-quarter', 'side-profile', 'rear', 'top-down', 'low-angle', 'high-angle', 'macro-detail', 'environmental-wide', 'functional-pov'] as const
+const ETSY_SHOT_SCALES = ['extreme-macro', 'detail-close-up', 'full-product', 'product-in-context', 'wide-environment'] as const
+const ETSY_LENS_CLASSES = ['ultra-wide', 'wide', 'normal', 'short-telephoto', 'macro', 'telephoto', 'tilt-shift'] as const
+const ETSY_LIGHTING_FAMILIES = ['soft-studio', 'raking-texture', 'cross-polarized', 'backlit-translucency', 'window-daylight', 'hard-directional', 'mixed-practical', 'edge-defined-low-key', 'high-key-shadowless', 'outdoor-natural'] as const
+const ETSY_SCENE_FAMILIES = ['seamless-studio', 'editorial-still-life', 'material-macro', 'scale-infographic', 'craft-workbench', 'active-use', 'contextual-interior', 'architectural-environment', 'nature-outdoor', 'gift-or-keepsake'] as const
+
+const ETSY_PHOTOGRAPHY_DECISION_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    productSuitability: { type: 'string', description: 'Why this exact capture choice reveals a verified material, form, detail, function, or purchase reason of this product.' },
+    angleFamily: { type: 'string', enum: ETSY_ANGLE_FAMILIES },
+    angle: { type: 'string', description: 'Precise product-specific camera height, azimuth, elevation, orientation, and perspective. Do not write only the angle family.' },
+    shotScale: { type: 'string', enum: ETSY_SHOT_SCALES },
+    framing: { type: 'string', description: 'Product occupancy, crop policy, orientation, negative space, layer placement, and perspective control.' },
+    cameraSystem: { type: 'string', description: 'A real top-tier camera or technical camera system selected because it suits this shot, not because it is a generic luxury name.' },
+    lensClass: { type: 'string', enum: ETSY_LENS_CLASSES },
+    lens: { type: 'string', description: 'A real high-end lens with focal length or magnification and why its perspective or rendering suits this product.' },
+    exposure: { type: 'string', description: 'Specific aperture, shutter speed, ISO, stabilization or tripod, and any tilt-shift or polarization setup needed.' },
+    focusStrategy: { type: 'string', description: 'Exact focal plane, depth-of-field intent, focus stack or motion-freezing strategy.' },
+    lightingFamily: { type: 'string', enum: ETSY_LIGHTING_FAMILIES },
+    lighting: { type: 'string', description: 'Product-specific source size, direction, diffusion, fill ratio, flags, reflection control, color temperature, and shadow behavior.' },
+    sceneFamily: { type: 'string', enum: ETSY_SCENE_FAMILIES },
+    scene: { type: 'string', description: 'A bespoke physically believable set or location chosen for this product and audience, including only truthful props and interactions.' },
+    differentiation: { type: 'string', description: 'State exactly how this shot differs from the other fourteen in viewpoint, scale, optics, light, scene, and selling job.' },
+  },
+  required: ['productSuitability', 'angleFamily', 'angle', 'shotScale', 'framing', 'cameraSystem', 'lensClass', 'lens', 'exposure', 'focusStrategy', 'lightingFamily', 'lighting', 'sceneFamily', 'scene', 'differentiation'],
+} as const
+
 function createEtsyPlannerSchema() {
   const slots = getEtsyImageSlots()
   return {
@@ -217,6 +267,7 @@ function createEtsyPlannerSchema() {
       product: PRODUCT_SCHEMA,
       sellingPoints: SELLING_POINTS_SCHEMA,
       visualDna: ETSY_VISUAL_DNA_SCHEMA,
+      photographyAnalysis: ETSY_PHOTOGRAPHY_ANALYSIS_SCHEMA,
       seriesStyleGuide: {
         type: 'string',
         description: 'English cross-shot consistency guide grounded only in the locked Visual DNA.',
@@ -240,12 +291,13 @@ function createEtsyPlannerSchema() {
               description: 'Professional English image-generation prompt. Explicitly repeat the locked material, color, texture, finish, silhouette, proportions, and construction details in every shot. Do not use generic reusable scene templates.',
             },
             negativePrompt: NEGATIVE_PROMPT_SCHEMA,
+            photographyDecision: ETSY_PHOTOGRAPHY_DECISION_SCHEMA,
           },
-          required: ['slot', 'label', 'planMarkdown', 'prompt', 'negativePrompt'],
+          required: ['slot', 'label', 'planMarkdown', 'prompt', 'negativePrompt', 'photographyDecision'],
         },
       },
     },
-    required: ['product', 'sellingPoints', 'visualDna', 'seriesStyleGuide', 'imagePlans'],
+    required: ['product', 'sellingPoints', 'visualDna', 'photographyAnalysis', 'seriesStyleGuide', 'imagePlans'],
   } as const
 }
 
@@ -551,6 +603,7 @@ function normalizePlan(plan: Partial<AmazonImagePlan>, index: number, slots: str
     planMarkdown: plan.planMarkdown || '',
     prompt: plan.prompt || '',
     negativePrompt: plan.negativePrompt || '',
+    ...(plan.photographyDecision ? { photographyDecision: plan.photographyDecision } : {}),
   }
 }
 
@@ -756,19 +809,115 @@ function formatEtsyVisualDnaLock(visualDna: EtsyVisualDna): string {
   ].join('\n')
 }
 
+function normalizeEtsyPhotographyAnalysis(payload: PlannerApiPayload, visualDna: EtsyVisualDna): EtsyPhotographyAnalysis {
+  const source = payload.photographyAnalysis ?? {}
+  return {
+    materialBehavior: normalizePlannerText(source.materialBehavior) || `Study how ${visualDna.materialTextureFocus} responds to highlight shape, diffusion, reflection control, and shadow depth.`,
+    formAndScale: normalizePlannerText(source.formAndScale) || `Use product-specific viewpoints that preserve the exact silhouette, proportions, construction, and believable scale of ${visualDna.productNameType}.`,
+    criticalDetails: normalizePlannerText(source.criticalDetails) || `Prioritize only verified material boundaries, texture, finish, construction, and included details visible in the product references.`,
+    functionAndInteraction: normalizePlannerText(source.functionAndInteraction) || 'Show only verified functions and physically credible interaction; never invent use cases, accessories, or installation details.',
+    captureChallenges: normalizePlannerText(source.captureChallenges) || `Control glare, distortion, depth of field, edge separation, and color so the real product remains accurate under ${visualDna.colorPaletteLightingMood}.`,
+    campaignStrategy: normalizePlannerText(source.campaignStrategy) || 'Keep product identity coherent while varying viewpoint, shot scale, focal length, lighting family, and scene family across all fifteen images.',
+  }
+}
+
+const ETSY_PHOTOGRAPHY_DECISION_FIELDS: Array<keyof EtsyShotPhotographyDecision> = [
+  'productSuitability',
+  'angleFamily',
+  'angle',
+  'shotScale',
+  'framing',
+  'cameraSystem',
+  'lensClass',
+  'lens',
+  'exposure',
+  'focusStrategy',
+  'lightingFamily',
+  'lighting',
+  'sceneFamily',
+  'scene',
+  'differentiation',
+]
+
+function normalizeEtsyPhotographyDecision(plan: AmazonImagePlan): EtsyShotPhotographyDecision {
+  const source = plan.photographyDecision
+  const missingFields = ETSY_PHOTOGRAPHY_DECISION_FIELDS.filter((field) => !normalizePlannerText(source?.[field]))
+  if (missingFields.length) {
+    throw new Error(`Etsy 镜头 ${plan.slot} 缺少摄影自动判断：${missingFields.join(', ')}`)
+  }
+
+  const decision = Object.fromEntries(
+    ETSY_PHOTOGRAPHY_DECISION_FIELDS.map((field) => [field, normalizePlannerText(source?.[field])]),
+  ) as unknown as EtsyShotPhotographyDecision
+  const categoricalFields: Array<[keyof EtsyShotPhotographyDecision, readonly string[]]> = [
+    ['angleFamily', ETSY_ANGLE_FAMILIES],
+    ['shotScale', ETSY_SHOT_SCALES],
+    ['lensClass', ETSY_LENS_CLASSES],
+    ['lightingFamily', ETSY_LIGHTING_FAMILIES],
+    ['sceneFamily', ETSY_SCENE_FAMILIES],
+  ]
+  for (const [field, allowedValues] of categoricalFields) {
+    if (!allowedValues.includes(decision[field])) {
+      throw new Error(`Etsy 镜头 ${plan.slot} 的 ${field} 不在摄影自动判断分类中：${decision[field]}`)
+    }
+  }
+  return decision
+}
+
+function normalizeDiversityKey(value: string): string {
+  return value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-')
+}
+
+function assertEtsyPhotographyDiversity(plans: AmazonImagePlan[]): void {
+  const decisions = plans.map((plan) => plan.photographyDecision).filter((item): item is EtsyShotPhotographyDecision => Boolean(item))
+  const minimums: Array<[keyof EtsyShotPhotographyDecision, number, string]> = [
+    ['angleFamily', 5, '角度类型'],
+    ['shotScale', 4, '景别'],
+    ['lensClass', 4, '镜头/焦段'],
+    ['lightingFamily', 4, '布光类型'],
+    ['sceneFamily', 5, '场景类型'],
+  ]
+  const failures = minimums.flatMap(([field, minimum, label]) => {
+    const uniqueCount = new Set(decisions.map((decision) => normalizeDiversityKey(decision[field]))).size
+    return uniqueCount >= minimum ? [] : [`${label}仅 ${uniqueCount} 类（至少 ${minimum} 类）`]
+  })
+
+  for (let index = 0; index < decisions.length; index += 1) {
+    const current = decisions[index]
+    for (let compareIndex = index + 1; compareIndex < decisions.length; compareIndex += 1) {
+      const other = decisions[compareIndex]
+      const repeatedCore = ['angleFamily', 'shotScale', 'lightingFamily', 'sceneFamily']
+        .filter((field) => normalizeDiversityKey(current[field as keyof EtsyShotPhotographyDecision]) === normalizeDiversityKey(other[field as keyof EtsyShotPhotographyDecision]))
+      if (repeatedCore.length >= 4) failures.push(`${plans[index]?.slot} 与 ${plans[compareIndex]?.slot} 的角度、景别、布光和场景完全重复`)
+    }
+  }
+
+  if (failures.length) {
+    throw new Error(`Etsy 摄影自动判断未通过 15 镜头差异检查：${failures.slice(0, 5).join('；')}`)
+  }
+}
+
 function normalizeEtsyPlannerApiPayload(payload: PlannerApiPayload, marketplaceId: AmazonMarketplaceId, fallbackTitle = ''): PlannerApiResult {
   const parsed = normalizeParsedListing(payload, fallbackTitle)
   const slots = getEtsyImageSlots()
   const plans = Array.isArray(payload.imagePlans)
     ? payload.imagePlans
-        .map((plan, index) => applyEtsyAdditionalShotBrief(normalizePlan(plan, index, slots), index))
+        .map((plan, index) => {
+          const normalizedPlan = normalizePlan(plan, index, slots)
+          return applyEtsyAdditionalShotBrief({
+            ...normalizedPlan,
+            photographyDecision: normalizeEtsyPhotographyDecision(normalizedPlan),
+          }, index)
+        })
         .filter((plan) => plan.prompt.trim() && plan.planMarkdown.trim())
         .slice(0, ETSY_SHOT_COUNT)
     : []
 
   if (plans.length !== ETSY_SHOT_COUNT) throw new Error(`Etsy 策划结果不是 ${ETSY_SHOT_COUNT} 张图`)
+  assertEtsyPhotographyDiversity(plans)
 
   const etsyVisualDna = normalizeEtsyVisualDna(payload, parsed)
+  const etsyPhotographyAnalysis = normalizeEtsyPhotographyAnalysis(payload, etsyVisualDna)
   const visualDnaLock = formatEtsyVisualDnaLock(etsyVisualDna)
   const modelGuide = normalizeSeriesStyleGuide(payload)
 
@@ -780,6 +929,7 @@ function normalizeEtsyPlannerApiPayload(payload: PlannerApiPayload, marketplaceI
     plans,
     aPlusPlans: [],
     etsyVisualDna,
+    etsyPhotographyAnalysis,
   }
 }
 
@@ -886,16 +1036,22 @@ function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft) {
     'PHASE 1 — DEEP DIVE ANALYSIS & STRATEGIC PLANNING ONLY. Do not generate images in this response.',
     'PART A: VISUAL DNA ANALYSIS. Analyze and return all four required fields: Product Name/Type; Material & Texture Focus; Color Palette & Lighting Mood; Brand Aesthetic & Target Audience.',
     'Visual DNA Lock is crucial: derive physical facts from the product description, user-provided facts, and reference images. Never invent or redesign material, color, texture, finish, silhouette, dimensions, construction, accessories, logo, text, or quantity.',
-    `PART B: THE DYNAMIC ${ETSY_SHOT_COUNT}-SHOT BESPOKE PLAN. Return exactly ${ETSY_SHOT_COUNT} shots in this slot order: ${slots.join(', ')}.`,
+    'PART B: PRODUCT-SPECIFIC PHOTOGRAPHY DIAGNOSIS. Before designing any shot, return photographyAnalysis covering material light behavior, form and scale, critical details, verified function and interaction, capture challenges, and the campaign strategy. This diagnosis must explain what this particular product needs photographically; avoid generic luxury language.',
+    `PART C: THE DYNAMIC ${ETSY_SHOT_COUNT}-SHOT BESPOKE PLAN. Return exactly ${ETSY_SHOT_COUNT} shots in this slot order: ${slots.join(', ')}.`,
     'Never use a reusable fixed scene template. Dynamically design every scene from this product’s Visual DNA, use case, craftsmanship, price positioning, gifting context, and likely Etsy buyer.',
     `Preserve the original ${ETSY_ORIGINAL_SHOT_COUNT}-shot behavior for E01-E10: they must remain a strategic mix of hero/clean listing, macro/detail, lifestyle/in-situ, and atmospheric/creative images, with their exact order and concepts uniquely chosen for this product. Do not replace or compress these original ten shots.`,
     'Append these five additional conversion shots after the original ten, in this exact order:',
     ...ETSY_ADDITIONAL_SHOT_BRIEFS.map((brief) => `${brief.slot} — ${brief.label}: ${brief.promptRequirement}`),
-    'For E11-E15, imagePlans.prompt must contain only the product-specific scene concept, verified product attributes, and the truthful use or selling context. Do not add camera bodies, lens settings, lighting boilerplate, rendering buzzwords, generic quality suffixes, or repeat the fixed shot brief; the application injects a calibrated production specification for each appended shot.',
+    'For every E01-E15 item, imagePlans.prompt must contain only the product-specific scene concept, verified product attributes, and truthful use or selling context. Keep all camera, lens, exposure, focus, lighting, scene-category, and differentiation decisions inside photographyDecision so the application can assemble a clean production prompt.',
     'For each imagePlans item, label the shot strategy clearly and write planMarkdown as: **[Shot Strategy]:** followed by a specific, creative scene description tailored exactly to this product.',
     'Every imagePlans.prompt must explicitly repeat the locked physical attributes—material, real color, texture, finish, silhouette, proportions, construction, and included details—so the image model cannot redesign the product.',
-    `For E01-E10 only, every imagePlans.prompt must include this exact mandatory technical style: ${ETSY_TECHNICAL_PHOTOGRAPHY_PARAMETERS}.`,
-    'For E11-E15, do not include that shared 100mm f/2.8 technical style. Each of those five shots receives its own camera, aperture, perspective, focus, lighting, composition, and retouching specification after planning.',
+    'For every shot, return a complete photographyDecision chosen from the product diagnosis: product suitability, angle family and exact viewpoint, shot scale and framing, top-tier real camera system, lens class and category-appropriate premium lens, aperture/shutter/ISO/support, focus strategy, lighting family and execution, scene family and execution, and an explicit difference from the other fourteen shots.',
+    'Choose equipment because it solves the shot: examples may include Phase One IQ4 for technical detail, Hasselblad X2D for controlled product or lifestyle work, high-end macro optics for craftsmanship, tilt-shift optics for strict geometry, or a flagship fast camera for real motion. Do not force one camera, one 100mm lens, or one aperture across the campaign.',
+    'DIVERSITY MATRIX (mandatory): across E01-E15 use at least 5 angleFamily values, 4 shotScale values, 4 materially different lenses or focal lengths, 4 lightingFamily values, and 5 sceneFamily values. No two shots may share the same angleFamily + shotScale + lightingFamily + sceneFamily combination.',
+    'Use diverse views only when they reveal something useful about this product. Build a deliberate rhythm across front/orthographic, three-quarter, side/rear, top-down, low/high, macro, functional POV, and environmental views as appropriate; never rotate the product arbitrarily just to satisfy variety.',
+    'Each scene must differ in actual spatial logic, buyer context, and selling job. Renaming the same tabletop, background, or three-quarter composition does not count as diversity.',
+    'Material-aware lighting is mandatory: select diffusion, raking light, cross-polarization, black flags, transmitted backlight, edge separation, practical ambience, or daylight shaping according to the verified surface behavior. Preserve true color and physically plausible reflections.',
+    'Dimensions rule: E12 may display only measurements explicitly verified in the supplied facts. If dimensions are absent, use a truthful universal scale cue without any number and state in planMarkdown that the seller must confirm numeric dimensions.',
     'Prompts and negative prompts must be in English. planMarkdown and UI labels should be concise Simplified Chinese.',
     'Keep scenes commercially useful for Etsy. Avoid marketplace badges, fake reviews, prices, coupons, sale stickers, watermarks, QR codes, and unsupported claims.',
     'Return one seriesStyleGuide in English that reinforces only product consistency and a cohesive bespoke campaign derived from the Visual DNA.',
@@ -1163,10 +1319,12 @@ function buildChatPlannerSchemaGuide(
   if (mode === 'etsy') {
     const slots = getEtsyImageSlots()
     return [
-      `Return JSON with: ${productFields}, sellingPoints string[], visualDna object, ${styleFields}, imagePlans array.`,
+      `Return JSON with: ${productFields}, sellingPoints string[], visualDna object, photographyAnalysis object, ${styleFields}, imagePlans array.`,
       'visualDna must include productNameType, materialTextureFocus, colorPaletteLightingMood, brandAestheticTargetAudience.',
+      'photographyAnalysis must include materialBehavior, formAndScale, criticalDetails, functionAndInteraction, captureChallenges, campaignStrategy.',
       `imagePlans must contain exactly ${slots.length} items in this order: ${slots.join(', ')}.`,
-      'Each imagePlans item must include: slot, label, planMarkdown, prompt, negativePrompt.',
+      'Each imagePlans item must include: slot, label, planMarkdown, prompt, negativePrompt, photographyDecision.',
+      'Each photographyDecision must include productSuitability, angleFamily, angle, shotScale, framing, cameraSystem, lensClass, lens, exposure, focusStrategy, lightingFamily, lighting, sceneFamily, scene, differentiation.',
       'Every prompt must explicitly repeat the locked product material, color, texture, finish, silhouette, proportions, and construction.',
     ].join('\n')
   }

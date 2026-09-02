@@ -67,7 +67,7 @@ import {
   sanitizeStyleReferenceEditState,
 } from '../lib/styleReferences'
 import { DEFAULT_PARAMS } from '../types'
-import type { AmazonPlannerSession, CustomStyleReference, EtsyListingDetails, EtsyVisualDna, StyleReferenceEditState } from '../types'
+import type { AmazonPlannerSession, CustomStyleReference, EtsyListingDetails, EtsyPhotographyAnalysis, EtsyVisualDna, StyleReferenceEditState } from '../types'
 import MarkdownRenderer from './MarkdownRenderer'
 import { ChevronLeftIcon, ChevronRightIcon, CloseIcon, CopyIcon, EditIcon, EyeIcon, HistoryIcon, PhotoIcon, PlusIcon, RefreshIcon, TrashIcon } from './icons'
 
@@ -457,6 +457,7 @@ export default function AmazonPlanner() {
     etsy: '',
   })
   const [etsyVisualDna, setEtsyVisualDna] = useState<EtsyVisualDna | null>(null)
+  const [etsyPhotographyAnalysis, setEtsyPhotographyAnalysis] = useState<EtsyPhotographyAnalysis | null>(null)
   const [etsyListingDetails, setEtsyListingDetails] = useState<EtsyListingDetails | null>(null)
   const [selectedStylePresetId, setSelectedStylePresetId] = useState<string | null>(DEFAULT_STYLE_PRESET_ID)
   const [selectedStyleReference, setSelectedStyleReference] = useState<SelectedStyleReference | null>(null)
@@ -789,6 +790,9 @@ export default function AmazonPlanner() {
       draft: overrides.draft ?? toSessionDraft(draft),
       seriesStyleGuides: overrides.seriesStyleGuides ?? seriesStyleGuides,
       etsyVisualDna: hasOverride('etsyVisualDna') ? overrides.etsyVisualDna ?? null : etsyVisualDna,
+      etsyPhotographyAnalysis: hasOverride('etsyPhotographyAnalysis')
+        ? overrides.etsyPhotographyAnalysis ?? null
+        : etsyPhotographyAnalysis,
       etsyListingDetails: hasOverride('etsyListingDetails')
         ? overrides.etsyListingDetails ?? null
         : isEtsyListingMode ? etsyListingDetails : null,
@@ -1211,6 +1215,7 @@ export default function AmazonPlanner() {
     }
     setSeriesStyleGuides(nextSeriesStyleGuides)
     setEtsyVisualDna(result.mode === 'etsy' ? result.etsyVisualDna ?? null : null)
+    setEtsyPhotographyAnalysis(result.mode === 'etsy' ? result.etsyPhotographyAnalysis ?? null : null)
     setSelectedStylePresetId(DEFAULT_STYLE_PRESET_ID)
     setSelectedStyleReference(null)
     setStylePreview(null)
@@ -1226,6 +1231,7 @@ export default function AmazonPlanner() {
       draft: toSessionDraft(nextDraft),
       seriesStyleGuides: nextSeriesStyleGuides,
       etsyVisualDna: result.mode === 'etsy' ? result.etsyVisualDna ?? null : null,
+      etsyPhotographyAnalysis: result.mode === 'etsy' ? result.etsyPhotographyAnalysis ?? null : null,
       styleCandidates: [],
       styleImages: [],
       selectedStyleIndex: null,
@@ -1368,6 +1374,7 @@ export default function AmazonPlanner() {
       await savePlannerSession({
         mode: 'etsy-listing',
         etsyVisualDna: null,
+        etsyPhotographyAnalysis: null,
         etsyListingDetails: result.details,
         seriesStyleGuides: { listing: '', aplus: '', etsy: '' },
         selectedStylePresetId: null,
@@ -1453,6 +1460,7 @@ export default function AmazonPlanner() {
       setImagePlans([])
       setSelectedPlanIndex(null)
       setEtsyVisualDna(null)
+      setEtsyPhotographyAnalysis(null)
     }
     setPlannerMode(mode)
     setStylePreview(null)
@@ -1496,6 +1504,7 @@ export default function AmazonPlanner() {
     setImagePlans([])
     setAPlusPlans([])
     setEtsyVisualDna(null)
+    setEtsyPhotographyAnalysis(null)
     setEtsyListingDetails(null)
     setEtsyListingError('')
     setSeriesStyleGuides(clearedStyleGuides)
@@ -1507,6 +1516,7 @@ export default function AmazonPlanner() {
       marketplaceId: nextMarketplaceId,
       seriesStyleGuides: clearedStyleGuides,
       etsyVisualDna: null,
+      etsyPhotographyAnalysis: null,
       etsyListingDetails: null,
       imagePlans: [],
       aPlusPlans: [],
@@ -1565,6 +1575,7 @@ export default function AmazonPlanner() {
     setAPlusPlans([])
     setSeriesStyleGuides({ listing: '', aplus: '', etsy: '' })
     setEtsyVisualDna(null)
+    setEtsyPhotographyAnalysis(null)
     setEtsyListingDetails(null)
     setSelectedStylePresetId(DEFAULT_STYLE_PRESET_ID)
     setSelectedStyleReference(null)
@@ -1702,6 +1713,7 @@ export default function AmazonPlanner() {
     setDraft(fromSessionDraft(session.draft))
     setSeriesStyleGuides({ ...session.seriesStyleGuides, etsy: session.seriesStyleGuides.etsy ?? '' })
     setEtsyVisualDna(session.etsyVisualDna ?? null)
+    setEtsyPhotographyAnalysis(session.etsyPhotographyAnalysis ?? null)
     setEtsyListingDetails(session.etsyListingDetails ?? null)
     setSelectedStylePresetId(isEtsyListingSession ? null : restoredStyleReference ? restoredStyleReference.presetId : nextStylePresetId)
     setSelectedStyleReference(isEtsyListingSession ? null : restoredStyleReference)
@@ -2203,6 +2215,30 @@ export default function AmazonPlanner() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {isEtsyImageMode && etsyPhotographyAnalysis && (
+            <div className="ios-group mt-5 p-4">
+              <div className="mb-3">
+                <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">PART B: AI 摄影自动判断</div>
+                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">AI 已先分析产品，再为 15 张图分别选择角度、器材、参数、布光与场景。</div>
+              </div>
+              <dl className="divide-y divide-gray-200 text-xs dark:divide-white/[0.08]">
+                {[
+                  ['材质与光线', etsyPhotographyAnalysis.materialBehavior],
+                  ['形状与尺度', etsyPhotographyAnalysis.formAndScale],
+                  ['关键细节', etsyPhotographyAnalysis.criticalDetails],
+                  ['功能与交互', etsyPhotographyAnalysis.functionAndInteraction],
+                  ['拍摄难点', etsyPhotographyAnalysis.captureChallenges],
+                  ['15 图策略', etsyPhotographyAnalysis.campaignStrategy],
+                ].map(([label, value]) => (
+                  <div key={label} className="grid gap-1 py-2.5 first:pt-0 last:pb-0 sm:grid-cols-[92px_1fr] sm:gap-3">
+                    <dt className="font-semibold text-[hsl(var(--primary))]">{label}</dt>
+                    <dd className="leading-relaxed text-gray-700 dark:text-gray-200">{value}</dd>
+                  </div>
+                ))}
+              </dl>
             </div>
           )}
 
