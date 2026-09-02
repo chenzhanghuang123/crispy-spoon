@@ -476,6 +476,33 @@ describe('mask draft lifecycle in store actions', () => {
     expect(task?.category).not.toHaveProperty('styleReferenceImageId')
   })
 
+  it('does not append a template style reference image for an Etsy prompt', async () => {
+    const styleImage = { id: 'style-reference-image', dataUrl: 'data:image/png;base64,style' }
+    await putImage(imageA)
+    await putImage(styleImage)
+    useStore.setState({
+      prompt: 'etsy prompt',
+      inputImages: [imageA],
+      pendingTaskCategory: {
+        mode: 'prompt-match',
+        prompt: 'etsy prompt',
+        category: {
+          productTitle: 'Framed Tiger Artwork',
+          workflow: 'etsy',
+          etsySlot: 'E05',
+          styleReferenceImageId: styleImage.id,
+        },
+      },
+    })
+
+    await submitTask()
+
+    const task = useStore.getState().tasks[0]
+    expect(task?.inputImageIds).toEqual([imageA.id])
+    expect(task?.category).toMatchObject({ workflow: 'etsy', etsySlot: 'E05' })
+    expect(task?.category).not.toHaveProperty('styleReferenceImageId')
+  })
+
   it('blocks submit when visible references plus hidden style reference exceed the API image limit', async () => {
     const styleImage = { id: 'style-reference-image', dataUrl: 'data:image/png;base64,style' }
     await putImage(styleImage)

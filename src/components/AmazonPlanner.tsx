@@ -528,6 +528,14 @@ export default function AmazonPlanner() {
         palette: selectedStyleReference.palette,
       }
     : selectedStylePreset
+  const selectedEtsyVisualStyle = selectedVisualStyle
+    ? {
+        ...selectedVisualStyle,
+        description: selectedStyleReference?.customStyleReferenceId
+          ? selectedVisualStyle.description
+          : selectedStylePreset?.etsyPhotographyDescription ?? selectedVisualStyle.description,
+      }
+    : null
   const activeSeriesStyleGuide = plannerMode === 'aplus'
     ? seriesStyleGuides.aplus
     : plannerMode === 'etsy'
@@ -536,7 +544,9 @@ export default function AmazonPlanner() {
   const isMainListingPlan = plannerMode === 'listing' && isAmazonListingMainSlot(selectedPlan?.slot)
   const styleReferenceRequired = !isEtsyListingMode && (plannerMode === 'etsy' || !isMainListingPlan)
   const hasStyleReference = Boolean(selectedStyleImage?.imageId)
-  const usesStyleReferenceForActivePlan = styleReferenceRequired && hasStyleReference
+  const usesStyleDirectionForActivePlan = styleReferenceRequired && Boolean(selectedVisualStyle)
+  const usesStyleReferenceForActivePlan = usesStyleDirectionForActivePlan && !isEtsyImageMode && hasStyleReference
+  const hasRequiredStyle = !styleReferenceRequired || (isEtsyImageMode ? usesStyleDirectionForActivePlan : hasStyleReference)
   const effectiveReferenceCount = inputImages.length + (usesStyleReferenceForActivePlan && selectedStyleImage?.imageId && !inputImages.some((image) => image.id === selectedStyleImage.imageId) ? 1 : 0)
   const styleReferenceLimitExceeded = usesStyleReferenceForActivePlan && effectiveReferenceCount > API_MAX_IMAGES
   const activePrompt = plannerMode === 'aplus'
@@ -552,9 +562,9 @@ export default function AmazonPlanner() {
       ? selectedPlan ? buildEtsyPlanPrompt({
         ...selectedPlan,
         seriesStyleGuide: activeSeriesStyleGuide,
-        styleReferenceAttached: usesStyleReferenceForActivePlan,
+        styleReferenceAttached: false,
         styleDensityMode,
-        selectedVisualStyle: usesStyleReferenceForActivePlan ? selectedVisualStyle : null,
+        selectedVisualStyle: usesStyleDirectionForActivePlan ? selectedEtsyVisualStyle : null,
       }) : ''
       : selectedPlan ? buildAmazonPlanPrompt({
         ...selectedPlan,
@@ -587,7 +597,7 @@ export default function AmazonPlanner() {
   const actionLabel = plannerMode === 'aplus' ? selectedAPlusPlan?.label : selectedPlan?.label
   const showStickyActions = plannerMode === 'aplus' ? aPlusPlansWithSizes.length > 0 : imagePlans.length > 0
   const actionDisabled = plannerMode === 'aplus' ? !selectedAPlusPlan : !activePrompt.trim()
-  const submitDisabled = actionDisabled || (styleReferenceRequired && !hasStyleReference) || styleReferenceLimitExceeded
+  const submitDisabled = actionDisabled || !hasRequiredStyle || styleReferenceLimitExceeded
   const hasPlanOptions = visiblePlanCount > 0
   const hasSelectedPlan = plannerMode === 'aplus' ? Boolean(selectedAPlusPlan) : Boolean(selectedPlan)
   const canGoPrev = visiblePlanCount > 0 && visiblePlanIndex != null && visiblePlanIndex > 0
@@ -852,7 +862,7 @@ export default function AmazonPlanner() {
       return false
     }
     const shouldRequireStyle = options.requireStyle && styleReferenceRequired
-    if (shouldRequireStyle && !selectedStyleImage?.imageId) {
+    if (shouldRequireStyle && !hasRequiredStyle) {
       showToast('请先选择一套风格参考', 'error')
       return false
     }
@@ -2593,7 +2603,9 @@ export default function AmazonPlanner() {
                 <div>
                   <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">视觉风格选择</div>
                   <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                    选择内置预设，或编辑后保存到“我的风格”。附图和 A+ 正式生图时会隐藏附加到请求末尾。
+                    {isEtsyImageMode
+                      ? 'Etsy 仅把所选预设转换为配色、光感与摄影质感，不会把带文字和版式的模板板附到生图请求。'
+                      : '选择内置预设，或编辑后保存到“我的风格”。附图和 A+ 正式生图时会隐藏附加到请求末尾。'}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -2813,7 +2825,9 @@ export default function AmazonPlanner() {
               )}
               {selectedStyleImage?.imageId && selectedStyleLabel && (
                 <div className="mt-3 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs leading-relaxed text-violet-800 dark:border-violet-300/20 dark:bg-violet-400/10 dark:text-violet-200">
-                  {isMainListingPlan
+                  {isEtsyImageMode
+                    ? `已选择「${selectedStyleLabel}」。将只用文字传递配色、光感与摄影质感，不附加模板图，避免占位文字、色条和信息框污染成品。`
+                    : isMainListingPlan
                     ? `已选择「${selectedStyleLabel}」，但当前 MAIN 主图不会附加这张风格参考图；切换到附图或 A+ 时才会作为隐藏参考。`
                     : `已选择「${selectedStyleLabel}」。正式生成时会隐藏附加这张风格参考图作为最后一张参考图，用于统一字体感觉、色板、光影、材质和标注样式，不复制其中占位文字、固定版式或产品摆放。`}
                 </div>

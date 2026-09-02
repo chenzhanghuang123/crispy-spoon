@@ -187,6 +187,29 @@ describe('Amazon prompt builders', () => {
     expect(prompt).not.toContain('information-rich Amazon gallery layout')
   })
 
+  it('uses an Etsy style as text-only photography direction without template artifacts', () => {
+    const prompt = buildEtsyPlanPrompt({
+      slot: 'E05',
+      prompt: 'Photograph the exact product in a product-specific interior.',
+      negativePrompt: 'wrong product, watermark',
+      photographyDecision: createPhotographyDecision(4),
+      seriesStyleGuide: 'Product Name/Type: Exact handmade product',
+      styleReferenceAttached: false,
+      selectedVisualStyle: {
+        label: 'Clean Tech',
+        description: 'Cool clean illumination, crisp whites, and restrained cyan accents.',
+        palette: ['#F8FAFC', '#38BDF8', '#14B8A6'],
+      },
+    })
+
+    expect(prompt).toContain('Selected Etsy campaign style (surrounding art direction only):')
+    expect(prompt).toContain('Cool clean illumination, crisp whites, and restrained cyan accents.')
+    expect(prompt).toContain('Keep one continuous real photograph')
+    expect(prompt).toContain('no typography, captions, labels, callouts, arrows, swatches')
+    expect(prompt).toContain('copied style-board text')
+    expect(prompt).not.toContain('The last input image is a hidden style reference')
+  })
+
   it('uses each AI-selected camera, angle, focus, lighting, and scene for appended Etsy shots', () => {
     const legacyProductionStandard = [
       'Premium production standard for this appended shot: art-directed by a world-class Etsy conversion strategist and luxury commercial photographer.',

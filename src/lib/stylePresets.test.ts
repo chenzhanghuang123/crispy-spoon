@@ -15,6 +15,8 @@ describe('style presets', () => {
 
   it('builds public asset URLs for bundled preset images', () => {
     expect(getStylePresetAssetUrl(STYLE_PRESETS[0]!)).toBe('/style-presets/clean-tech.png')
+    expect(STYLE_PRESETS[0]?.etsyPhotographyDescription).toContain('Cool clean illumination')
+    expect(STYLE_PRESETS[0]?.etsyPhotographyDescription).not.toMatch(/callout|annotation/i)
   })
 
   it('loads a preset image and stores it as a preset image', async () => {

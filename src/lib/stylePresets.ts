@@ -4,6 +4,7 @@ export interface StylePreset {
   id: string
   label: string
   description: string
+  etsyPhotographyDescription: string
   fileName: string
   palette: string[]
 }
@@ -13,6 +14,7 @@ export const STYLE_PRESETS: StylePreset[] = [
     id: 'clean-tech',
     label: '清爽科技',
     description: '冷色光感、干净层级、精准标注，适合电子、工具、办公类产品。',
+    etsyPhotographyDescription: 'Cool clean illumination, crisp neutral whites, restrained cyan and teal accents in the physical set, precise tonal separation, and an uncluttered premium studio finish.',
     fileName: 'clean-tech.png',
     palette: ['#F8FAFC', '#E0F2FE', '#38BDF8', '#0F172A', '#94A3B8', '#14B8A6'],
   },
@@ -20,6 +22,7 @@ export const STYLE_PRESETS: StylePreset[] = [
     id: 'natural-warm',
     label: '自然暖调',
     description: '柔和日光、自然材质、温暖背景，适合家居、母婴、户外生活类产品。',
+    etsyPhotographyDescription: 'Soft natural daylight, warm neutral surroundings, tactile real materials, gentle contrast, and a calm handcrafted editorial finish.',
     fileName: 'natural-warm.png',
     palette: ['#FFF8ED', '#F4D6A6', '#C58A45', '#2F3A2F', '#8FA478', '#E76F51'],
   },
@@ -27,6 +30,7 @@ export const STYLE_PRESETS: StylePreset[] = [
     id: 'premium-contrast',
     label: '高级对比',
     description: '深浅对比、金属质感、编辑感聚焦，适合高客单、礼品、精品配件。',
+    etsyPhotographyDescription: 'Refined light-dark contrast, controlled specular highlights, focused editorial composition, restrained warm-metal accents, and a premium collectible finish.',
     fileName: 'premium-contrast.png',
     palette: ['#F5F5F4', '#D6D3D1', '#A8A29E', '#111827', '#C8A24A', '#7C2D12'],
   },
@@ -34,6 +38,7 @@ export const STYLE_PRESETS: StylePreset[] = [
     id: 'bright-retail',
     label: '明亮零售',
     description: '明快色块、清晰卖点区域、购物页友好，适合快消、厨房、运动配件。',
+    etsyPhotographyDescription: 'Bright even commercial light, clean high-key surfaces, lively but restrained color accents, clear product separation, and an approachable polished retail finish.',
     fileName: 'bright-retail.png',
     palette: ['#FFFFFF', '#FEF3C7', '#F97316', '#2563EB', '#16A34A', '#111827'],
   },

@@ -444,7 +444,9 @@ function formatPromptBlock(options: {
   includeDensityGuide?: boolean
   etsyAdaptivePhotography?: boolean
 }) {
-  const selectedVisualStyle = options.styleReferenceAttached ? options.selectedVisualStyle : null
+  const selectedVisualStyle = options.selectedVisualStyle && (options.styleReferenceAttached || options.etsyAdaptivePhotography)
+    ? options.selectedVisualStyle
+    : null
   const selectedStyleBlock = selectedVisualStyle
     ? options.etsyAdaptivePhotography
       ? [
@@ -452,7 +454,8 @@ function formatPromptBlock(options: {
         `- Style reference: ${selectedVisualStyle.label}.`,
         `- Style direction: ${selectedVisualStyle.description}`,
         selectedVisualStyle.palette.length ? `- Supporting palette anchors: ${selectedVisualStyle.palette.join(', ')}.` : '',
-        '- Apply this style to the environment and campaign finish without overriding the product-specific capture decision or altering the real product.',
+        '- Translate this text-only direction into physical background materials, prop colors, light quality, contrast, and photographic finish without altering the real product.',
+        '- Keep one continuous real photograph. Unless the shot objective explicitly requires verified measurements, add no typography, captions, labels, callouts, arrows, swatches, palette bars, floating panels, grids, split layouts, UI, or infographic graphics.',
       ].filter(Boolean).join('\n')
       : [
         'Selected visual style (highest priority):',
@@ -510,6 +513,9 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
   } | null
 }): string {
   const additionalBrief = getEtsyAdditionalShotBrief(plan.slot)
+  const styleBoardArtifacts = additionalBrief?.slot === 'E12'
+    ? 'style board title, typography sample, color swatches, palette strip, copied placeholder text, floating UI panels, split-screen template'
+    : 'typography, captions, labels, callout boxes, leader lines, arrows, color swatches, palette strip, infographic panels, floating UI cards, split-screen template, copied style-board text'
   if (plan.photographyDecision) {
     const visualDnaBlock = getEtsyVisualDnaBlock(plan.seriesStyleGuide)
     const productSpecificPlan = stripLegacyEtsyAdditionalPromptBoilerplate(plan.prompt)
@@ -536,6 +542,7 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
       negativePrompt: mergeEtsyNegativePrompts(
         plan.negativePrompt,
         additionalBrief?.negativeRequirement,
+        styleBoardArtifacts,
         'altered product geometry, changed component placement, enlarged motif, redesigned product, wrong material, wrong color, wrong quantity, floating object, malformed edges, AI artifacts',
       ),
       seriesStyleGuide: null,
@@ -561,10 +568,11 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
         `FINISH AND QUALITY CONTROL:\n${additionalBrief.finishRequirement}`,
         'Legacy plan fallback: preserve the supplied product references exactly and render a real commissioned photograph, not a 3D render or generic AI image.',
       ].filter(Boolean).join('\n\n'),
-      negativePrompt: mergeEtsyNegativePrompts(plan.negativePrompt, additionalBrief.negativeRequirement),
+      negativePrompt: mergeEtsyNegativePrompts(plan.negativePrompt, additionalBrief.negativeRequirement, styleBoardArtifacts),
       seriesStyleGuide: null,
       marketplaceId: undefined,
       includeDensityGuide: false,
+      etsyAdaptivePhotography: true,
     })
   }
 
@@ -580,9 +588,11 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
       'Do not redesign, recolor, resize, relabel, or materially alter the product. Keep materials, colors, texture, silhouette, proportions, accessories, logo/text, and finish consistent with the product facts/reference images.',
       'No marketplace badges, fake reviews, prices, coupons, sale stickers, watermarks, QR codes, or UI screenshots.',
     ].filter(Boolean).join('\n\n'),
+    negativePrompt: mergeEtsyNegativePrompts(plan.negativePrompt, styleBoardArtifacts),
     seriesStyleGuide: null,
     marketplaceId: undefined,
     includeDensityGuide: false,
+    etsyAdaptivePhotography: true,
   })
 }
 

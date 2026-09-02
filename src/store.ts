@@ -109,10 +109,12 @@ function isPlannerTaskWorkflow(
   return workflow === 'amazon-listing' || workflow === 'amazon-aplus' || workflow === 'etsy'
 }
 
-function removeMainStyleReference(
+function removeUnsupportedStyleReference(
   category: NonNullable<TaskRecord['category']>,
 ): NonNullable<TaskRecord['category']> {
-  if (category.workflow !== 'amazon-listing' || !isAmazonListingMainSlot(category.amazonSlot) || !category.styleReferenceImageId) return category
+  const shouldRemove = category.workflow === 'etsy'
+    || (category.workflow === 'amazon-listing' && isAmazonListingMainSlot(category.amazonSlot))
+  if (!shouldRemove || !category.styleReferenceImageId) return category
   const { styleReferenceImageId, ...nextCategory } = category
   return nextCategory
 }
@@ -138,7 +140,7 @@ function createNextSubmitTaskCategory(task: TaskRecord): NonNullable<TaskRecord[
   else if (amazonSlot) category.amazonSlot = amazonSlot
   if (workflow === 'amazon-aplus' && aPlusType) category.aPlusType = aPlusType
   if (workflow !== 'etsy') category.marketplaceId = marketplaceId
-  if (styleReferenceImageId && !(workflow === 'amazon-listing' && isAmazonListingMainSlot(amazonSlot))) {
+  if (styleReferenceImageId && workflow !== 'etsy' && !(workflow === 'amazon-listing' && isAmazonListingMainSlot(amazonSlot))) {
     category.styleReferenceImageId = styleReferenceImageId
   }
 
@@ -150,11 +152,11 @@ function resolvePendingTaskCategory(
   trimmedPrompt: string,
 ): NonNullable<TaskRecord['category']> {
   if (!pendingTaskCategory) return { workflow: 'gallery' }
-  if (pendingTaskCategory.mode === 'next-submit') return removeMainStyleReference(pendingTaskCategory.category)
+  if (pendingTaskCategory.mode === 'next-submit') return removeUnsupportedStyleReference(pendingTaskCategory.category)
   const category: NonNullable<TaskRecord['category']> = pendingTaskCategory.prompt.trim() === trimmedPrompt
     ? pendingTaskCategory.category
     : { workflow: 'gallery' }
-  return removeMainStyleReference(category)
+  return removeUnsupportedStyleReference(category)
 }
 
 export function getErrorToastMessage(message: string): string {
