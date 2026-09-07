@@ -630,12 +630,10 @@ export default function InputBar() {
   const activeProvider = activeProfile.provider
   const isFalProvider = activeProvider === 'fal'
   const isLinApiProvider = activeProvider === 'linapi'
-  const isNiaoTvProvider = activeProvider === 'niaotv'
-  const isNiaoTvBananaModel = isNiaoTvProvider && activeProfile.model.startsWith('gemini-')
-  const providerUsesFixedImageOptions = isFalProvider || isLinApiProvider || isNiaoTvBananaModel
+  const providerUsesFixedImageOptions = isFalProvider || isLinApiProvider
   const agentAutoImageCount = appMode === 'agent' && activeProfile.provider === 'openai' && activeProfile.apiMode === 'responses'
-  const moderationDisabled = providerUsesFixedImageOptions || isNiaoTvProvider
-  const compressionDisabled = params.output_format === 'png' || providerUsesFixedImageOptions || isNiaoTvProvider
+  const moderationDisabled = providerUsesFixedImageOptions
+  const compressionDisabled = params.output_format === 'png' || providerUsesFixedImageOptions
   const outputImageLimit = getOutputImageLimitForSettings(effectiveSettings)
   const isFalTextToImage = isFalProvider && inputImages.length === 0
   const nDraftValue = Number(nInput)
@@ -647,8 +645,6 @@ export default function InputBar() {
     ? `fal.ai 最大请求数量为 ${outputImageLimit}`
     : isLinApiProvider
     ? `LinAPI 最大并发请求数量为 ${outputImageLimit}`
-    : isNiaoTvProvider
-    ? `NiaoTV AI 最大请求数量为 ${outputImageLimit}`
     : `OpenAI 最大请求数量为 ${outputImageLimit}`
   const displaySize = isFalTextToImage && params.size === 'auto'
     ? DEFAULT_FAL_IMAGE_SIZE
@@ -1826,34 +1822,34 @@ export default function InputBar() {
       >
         <span className="text-gray-400 dark:text-gray-500 ml-1">质量</span>
         <Select
-          value={isLinApiProvider || isNiaoTvBananaModel || (isFalProvider && params.quality === 'auto') ? 'high' : params.quality}
+          value={isLinApiProvider || (isFalProvider && params.quality === 'auto') ? 'high' : params.quality}
           onChange={(val) => {
-            if (!isLinApiProvider && !isNiaoTvBananaModel) setParams({ quality: val as any })
+            if (!isLinApiProvider) setParams({ quality: val as any })
           }}
           options={qualityOptions}
-          disabled={isLinApiProvider || isNiaoTvBananaModel}
+          disabled={isLinApiProvider}
           className={selectClass}
         />
         <ButtonTooltip
           visible={providerUsesFixedImageOptions && qualityHint.visible}
-          text={isLinApiProvider || isNiaoTvBananaModel
-            ? `${isNiaoTvBananaModel ? 'Nano Banana' : 'LinAPI'} 的真实清晰度由尺寸档位 1K / 2K / 4K 决定`
+          text={isLinApiProvider
+            ? 'LinAPI 的真实清晰度由尺寸档位 1K / 2K / 4K 决定'
             : <>fal.ai 不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 质量参数</>}
         />
       </label>
       <label className="flex flex-col gap-0.5">
         <span className="text-gray-400 dark:text-gray-500 ml-1">格式</span>
         <Select
-          value={isLinApiProvider || isNiaoTvProvider ? 'png' : params.output_format}
+          value={isLinApiProvider ? 'png' : params.output_format}
           onChange={(val) => {
-            if (!isLinApiProvider && !isNiaoTvProvider) setParams({ output_format: val as any })
+            if (!isLinApiProvider) setParams({ output_format: val as any })
           }}
           options={[
             { label: 'PNG', value: 'png' },
             { label: 'JPEG', value: 'jpeg' },
             { label: 'WebP', value: 'webp' },
           ]}
-          disabled={isLinApiProvider || isNiaoTvProvider}
+          disabled={isLinApiProvider}
           className={selectClass}
         />
       </label>
@@ -1884,9 +1880,7 @@ export default function InputBar() {
         />
         <ButtonTooltip
           visible={compressionHint.visible}
-          text={isNiaoTvProvider
-            ? 'NiaoTV AI 不接受压缩率参数'
-            : providerUsesFixedImageOptions ? `${isLinApiProvider ? 'LinAPI' : 'fal.ai'} 不支持压缩率参数` : '仅 JPEG 和 WebP 支持压缩率'}
+          text={providerUsesFixedImageOptions ? `${isLinApiProvider ? 'LinAPI' : 'fal.ai'} 不支持压缩率参数` : '仅 JPEG 和 WebP 支持压缩率'}
         />
       </label>
       <label
@@ -1915,7 +1909,7 @@ export default function InputBar() {
         />
         <ButtonTooltip
           visible={moderationDisabled && moderationHint.visible}
-          text={`${isNiaoTvProvider ? 'NiaoTV AI' : isLinApiProvider ? 'LinAPI' : 'fal.ai'} 不支持审核参数`}
+          text={`${isLinApiProvider ? 'LinAPI' : 'fal.ai'} 不支持审核参数`}
         />
       </label>
       <label

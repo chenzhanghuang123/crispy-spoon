@@ -49,6 +49,43 @@ describe('mergeImportedSettings', () => {
     })
   })
 
+  it('discards legacy NiaoTV profiles and provider order entries', () => {
+    const legacyProfile = {
+      id: 'legacy-niaotv',
+      name: 'Legacy image provider',
+      provider: 'niaotv',
+      baseUrl: 'https://removed-provider.example.com',
+      apiKey: 'removed-provider-key',
+      model: 'gpt-image-2',
+      timeout: 600,
+      apiMode: 'images',
+      codexCli: false,
+      apiProxy: false,
+    }
+    const retainedProfile = createDefaultLinApiProfile({ id: 'linapi-profile' })
+    const normalized = normalizeSettings({
+      profiles: [legacyProfile, retainedProfile],
+      activeProfileId: legacyProfile.id,
+      providerOrder: ['niaotv', 'linapi', 'openai'],
+    })
+
+    expect(normalized.profiles).toEqual([retainedProfile])
+    expect(normalized.activeProfileId).toBe(retainedProfile.id)
+    expect(normalized.providerOrder).toEqual(['linapi', 'openai'])
+
+    const onlyLegacy = normalizeSettings({
+      baseUrl: legacyProfile.baseUrl,
+      apiKey: legacyProfile.apiKey,
+      profiles: [legacyProfile],
+      activeProfileId: legacyProfile.id,
+    })
+
+    expect(onlyLegacy.profiles).toHaveLength(2)
+    expect(onlyLegacy.activeProfileId).toBe(DEFAULT_OPENAI_PROFILE_ID)
+    expect(onlyLegacy.baseUrl).not.toBe(legacyProfile.baseUrl)
+    expect(onlyLegacy.apiKey).toBe('')
+  })
+
   it('splits a persisted single default planner profile into image and planner defaults', () => {
     const settings = normalizeSettings({
       profiles: [

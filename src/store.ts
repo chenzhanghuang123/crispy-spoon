@@ -1529,7 +1529,7 @@ function getFalRecoveryProfile(settings: AppSettings, task: TaskRecord) {
 
 function getCustomRecoveryProfile(settings: AppSettings, task: TaskRecord) {
   const provider = task.apiProvider
-  if (!provider || provider === 'openai' || provider === 'fal' || provider === 'linapi' || provider === 'linapi-gpt' || provider === 'niaotv') return null
+  if (!provider || provider === 'openai' || provider === 'fal' || provider === 'linapi' || provider === 'linapi-gpt') return null
   const taskProfile = getTaskApiProfile(settings, task)
   if (taskProfile?.provider === provider) return taskProfile
   return null
