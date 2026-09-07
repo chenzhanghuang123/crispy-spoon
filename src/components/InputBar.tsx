@@ -630,7 +630,8 @@ export default function InputBar() {
   const activeProvider = activeProfile.provider
   const isFalProvider = activeProvider === 'fal'
   const isLinApiProvider = activeProvider === 'linapi'
-  const providerUsesFixedImageOptions = isFalProvider || isLinApiProvider
+  const isNewApiGeminiProvider = activeProvider === 'newapi-gemini'
+  const providerUsesFixedImageOptions = isFalProvider || isLinApiProvider || isNewApiGeminiProvider
   const agentAutoImageCount = appMode === 'agent' && activeProfile.provider === 'openai' && activeProfile.apiMode === 'responses'
   const moderationDisabled = providerUsesFixedImageOptions
   const compressionDisabled = params.output_format === 'png' || providerUsesFixedImageOptions
@@ -645,6 +646,8 @@ export default function InputBar() {
     ? `fal.ai 最大请求数量为 ${outputImageLimit}`
     : isLinApiProvider
     ? `LinAPI 最大并发请求数量为 ${outputImageLimit}`
+    : isNewApiGeminiProvider
+    ? `New API Gemini 最大并发请求数量为 ${outputImageLimit}`
     : `OpenAI 最大请求数量为 ${outputImageLimit}`
   const displaySize = isFalTextToImage && params.size === 'auto'
     ? DEFAULT_FAL_IMAGE_SIZE
@@ -1822,34 +1825,34 @@ export default function InputBar() {
       >
         <span className="text-gray-400 dark:text-gray-500 ml-1">质量</span>
         <Select
-          value={isLinApiProvider || (isFalProvider && params.quality === 'auto') ? 'high' : params.quality}
+          value={isLinApiProvider || isNewApiGeminiProvider || (isFalProvider && params.quality === 'auto') ? 'high' : params.quality}
           onChange={(val) => {
-            if (!isLinApiProvider) setParams({ quality: val as any })
+            if (!isLinApiProvider && !isNewApiGeminiProvider) setParams({ quality: val as any })
           }}
           options={qualityOptions}
-          disabled={isLinApiProvider}
+          disabled={isLinApiProvider || isNewApiGeminiProvider}
           className={selectClass}
         />
         <ButtonTooltip
           visible={providerUsesFixedImageOptions && qualityHint.visible}
-          text={isLinApiProvider
-            ? 'LinAPI 的真实清晰度由尺寸档位 1K / 2K / 4K 决定'
+          text={isLinApiProvider || isNewApiGeminiProvider
+            ? `${isNewApiGeminiProvider ? 'New API Gemini' : 'LinAPI'} 的真实清晰度由尺寸档位 1K / 2K / 4K 决定`
             : <>fal.ai 不支持 <code className="rounded bg-white/10 px-1 py-0.5 font-mono">auto</code> 质量参数</>}
         />
       </label>
       <label className="flex flex-col gap-0.5">
         <span className="text-gray-400 dark:text-gray-500 ml-1">格式</span>
         <Select
-          value={isLinApiProvider ? 'png' : params.output_format}
+          value={isLinApiProvider || isNewApiGeminiProvider ? 'png' : params.output_format}
           onChange={(val) => {
-            if (!isLinApiProvider) setParams({ output_format: val as any })
+            if (!isLinApiProvider && !isNewApiGeminiProvider) setParams({ output_format: val as any })
           }}
           options={[
             { label: 'PNG', value: 'png' },
             { label: 'JPEG', value: 'jpeg' },
             { label: 'WebP', value: 'webp' },
           ]}
-          disabled={isLinApiProvider}
+          disabled={isLinApiProvider || isNewApiGeminiProvider}
           className={selectClass}
         />
       </label>
@@ -1880,7 +1883,7 @@ export default function InputBar() {
         />
         <ButtonTooltip
           visible={compressionHint.visible}
-          text={providerUsesFixedImageOptions ? `${isLinApiProvider ? 'LinAPI' : 'fal.ai'} 不支持压缩率参数` : '仅 JPEG 和 WebP 支持压缩率'}
+          text={providerUsesFixedImageOptions ? `${isNewApiGeminiProvider ? 'New API Gemini' : isLinApiProvider ? 'LinAPI' : 'fal.ai'} 不支持压缩率参数` : '仅 JPEG 和 WebP 支持压缩率'}
         />
       </label>
       <label
@@ -1909,7 +1912,7 @@ export default function InputBar() {
         />
         <ButtonTooltip
           visible={moderationDisabled && moderationHint.visible}
-          text={`${isLinApiProvider ? 'LinAPI' : 'fal.ai'} 不支持审核参数`}
+          text={`${isNewApiGeminiProvider ? 'New API Gemini' : isLinApiProvider ? 'LinAPI' : 'fal.ai'} 不支持审核参数`}
         />
       </label>
       <label

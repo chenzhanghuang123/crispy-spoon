@@ -4,7 +4,7 @@ import type { TaskRecord } from '../types'
 import { useStore, ensureImageThumbnailCached, subscribeImageThumbnail, updateTaskInStore, retryTask } from '../store'
 import { formatImageRatio } from '../lib/size'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
-import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL, DEFAULT_LINAPI_MODEL } from '../lib/apiProfiles'
+import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL, DEFAULT_LINAPI_MODEL, DEFAULT_NEWAPI_GEMINI_MODEL } from '../lib/apiProfiles'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { CodeIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
@@ -345,6 +345,8 @@ export default function TaskCard({
     ? DEFAULT_FAL_MODEL
     : task.apiProvider === 'linapi'
       ? DEFAULT_LINAPI_MODEL
+      : task.apiProvider === 'newapi-gemini'
+        ? DEFAULT_NEWAPI_GEMINI_MODEL
       : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
   const isInterrupted = task.status === 'error' && task.error === '已停止生成。'

@@ -7,6 +7,8 @@ import {
   DEFAULT_LINAPI_GPT_BASE_URL,
   DEFAULT_LINAPI_GPT_MODEL,
   DEFAULT_LINAPI_MODEL,
+  DEFAULT_NEWAPI_GEMINI_BASE_URL,
+  DEFAULT_NEWAPI_GEMINI_MODEL,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_AMAZON_PLANNER_PROFILE_ID,
   DEFAULT_OPENAI_PROFILE_ID,
@@ -17,6 +19,7 @@ import {
   createDefaultFalProfile,
   createDefaultLinApiProfile,
   createDefaultLinApiGptProfile,
+  createDefaultNewApiGeminiProfile,
   findEquivalentApiProfile,
   getAmazonPlannerProfile,
   getVisibleApiProfiles,
@@ -854,6 +857,43 @@ describe('custom providers', () => {
       baseUrl: DEFAULT_LINAPI_GPT_BASE_URL,
       model: DEFAULT_LINAPI_GPT_MODEL,
       apiMode: 'images',
+    })
+  })
+
+  it('preserves New API Gemini as a built-in native image provider', () => {
+    const openaiProfile = createDefaultOpenAIProfile()
+    const newApiProfile = switchApiProfileProvider(openaiProfile, 'newapi-gemini')
+    expect(newApiProfile).toMatchObject({
+      provider: 'newapi-gemini',
+      baseUrl: DEFAULT_NEWAPI_GEMINI_BASE_URL,
+      model: DEFAULT_NEWAPI_GEMINI_MODEL,
+      apiMode: 'images',
+      apiProxy: false,
+    })
+
+    const configured = {
+      ...newApiProfile,
+      baseUrl: 'https://newapi.example.com/v1/',
+      model: 'gemini-image-model',
+    }
+    const normalized = normalizeSettings({
+      profiles: [configured],
+      activeProfileId: configured.id,
+    })
+    expect(normalized.profiles[0]).toMatchObject({
+      provider: 'newapi-gemini',
+      baseUrl: 'https://newapi.example.com/v1',
+      model: 'gemini-image-model',
+      apiMode: 'images',
+    })
+
+    const restored = switchApiProfileProvider(
+      switchApiProfileProvider(configured, 'openai'),
+      'newapi-gemini',
+    )
+    expect(restored).toMatchObject({
+      baseUrl: 'https://newapi.example.com/v1',
+      model: 'gemini-image-model',
     })
   })
 })

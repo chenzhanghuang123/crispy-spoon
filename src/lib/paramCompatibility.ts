@@ -5,6 +5,7 @@ import { normalizeImageSize } from './size'
 export const DEFAULT_FAL_IMAGE_SIZE = '1360x1024'
 export const MAX_FAL_OUTPUT_IMAGES = 4
 export const MAX_LINAPI_OUTPUT_IMAGES = 4
+export const MAX_NEWAPI_GEMINI_OUTPUT_IMAGES = 4
 export const MAX_OPENAI_OUTPUT_IMAGES = 10
 
 export function getOutputImageLimitForSettings(settings: AppSettings) {
@@ -12,6 +13,7 @@ export function getOutputImageLimitForSettings(settings: AppSettings) {
   if (provider === 'fal') return MAX_FAL_OUTPUT_IMAGES
   if (provider === 'linapi') return MAX_LINAPI_OUTPUT_IMAGES
   if (provider === 'linapi-gpt') return 1
+  if (provider === 'newapi-gemini') return MAX_NEWAPI_GEMINI_OUTPUT_IMAGES
   return MAX_OPENAI_OUTPUT_IMAGES
 }
 
@@ -35,7 +37,7 @@ export function normalizeParamsForSettings(
     nextParams.output_compression = null
   }
 
-  if (activeProfile.provider === 'linapi') {
+  if (activeProfile.provider === 'linapi' || activeProfile.provider === 'newapi-gemini') {
     nextParams.quality = 'high'
     nextParams.output_format = 'png'
     nextParams.moderation = DEFAULT_PARAMS.moderation
@@ -44,7 +46,7 @@ export function normalizeParamsForSettings(
 
   if (nextParams.output_format === 'png') {
     nextParams.output_compression = null
-  } else if (activeProfile.provider !== 'fal' && activeProfile.provider !== 'linapi') {
+  } else if (activeProfile.provider !== 'fal' && activeProfile.provider !== 'linapi' && activeProfile.provider !== 'newapi-gemini') {
     nextParams.output_compression = normalizeOutputCompression(nextParams.output_compression)
   }
 

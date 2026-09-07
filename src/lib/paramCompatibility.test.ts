@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
-import { createDefaultFalProfile, createDefaultLinApiGptProfile, createDefaultLinApiProfile, createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
+import { createDefaultFalProfile, createDefaultLinApiGptProfile, createDefaultLinApiProfile, createDefaultNewApiGeminiProfile, createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
 import { getOutputImageLimitForSettings, normalizeParamsForSettings } from './paramCompatibility'
 
 describe('parameter compatibility', () => {
@@ -63,6 +63,34 @@ describe('parameter compatibility', () => {
 
     expect(getOutputImageLimitForSettings(settings)).toBe(1)
     expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, n: 8 }, settings).n).toBe(1)
+  })
+
+  it('normalizes New API Gemini native image parameters and limits concurrency to 4', () => {
+    const profile = createDefaultNewApiGeminiProfile({
+      baseUrl: 'https://newapi.example.com/v1',
+      apiKey: 'newapi-key',
+    })
+    const settings = normalizeSettings({
+      ...DEFAULT_SETTINGS,
+      profiles: [profile],
+      activeProfileId: profile.id,
+    })
+
+    expect(getOutputImageLimitForSettings(settings)).toBe(4)
+    expect(normalizeParamsForSettings({
+      ...DEFAULT_PARAMS,
+      quality: 'low',
+      output_format: 'webp',
+      output_compression: 65,
+      moderation: 'low',
+      n: 8,
+    }, settings)).toMatchObject({
+      quality: 'high',
+      output_format: 'png',
+      output_compression: null,
+      moderation: 'auto',
+      n: 4,
+    })
   })
 
   it('ignores deprecated OpenAI streaming settings when normalizing output count', () => {
