@@ -584,14 +584,60 @@ describe('callAmazonPlannerApi', () => {
     expect(result.seriesStyleGuide).toContain('Product Name/Type: Hand-thrown ceramic mug')
   })
 
-  it('rejects an Etsy plan when all fifteen shots repeat the same photographic setup', async () => {
-    const apiPayload = createEtsyPayload()
-    apiPayload.imagePlans = apiPayload.imagePlans.map((plan) => ({
+  it('automatically repairs an Etsy plan that fails the photography diversity check', async () => {
+    const invalidPayload = createEtsyPayload()
+    invalidPayload.imagePlans[12] = {
+      ...invalidPayload.imagePlans[12]!,
+      photographyDecision: { ...invalidPayload.imagePlans[2]!.photographyDecision },
+    }
+    const repairedPayload = createEtsyPayload()
+    let requestCount = 0
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => {
+      const payload = requestCount === 0 ? invalidPayload : repairedPayload
+      requestCount += 1
+      return new Response(JSON.stringify({
+        output_text: JSON.stringify(payload),
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug.',
+      baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
+      mode: 'etsy',
+      referenceImageDataUrls: ['data:image/png;base64,etsy-ref'],
+      profile: createDefaultOpenAIProfile({
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'user-api-key',
+        apiMode: 'responses',
+        model: 'gpt-planner-profile',
+      }),
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const repairBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
+    expect(repairBody.input[0].content).toHaveLength(1)
+    expect(repairBody.input[0].content[0].text).toContain('Repair the previous Etsy 15-shot planning JSON')
+    expect(repairBody.input[0].content[0].text).toContain('Etsy 摄影自动判断未通过 15 镜头差异检查')
+    expect(repairBody.input[0].content[0].text).toContain('E03 与 E13')
+    expect(repairBody.input[0].content[0].text).toContain('Change only the minimum conflicting or invalid imagePlans items')
+    expect(repairBody.input[0].content[0].text).toContain(invalidPayload.imagePlans[0]!.prompt)
+    expect(JSON.stringify(repairBody.input)).not.toContain('input_image')
+    expect(result.plans).toHaveLength(ETSY_SHOT_COUNT)
+    expect(result.plans[1]?.photographyDecision?.angleFamily).toBe(createPhotographyDecision(1).angleFamily)
+  })
+
+  it('reports both validation attempts when automatic Etsy repair still fails', async () => {
+    const invalidPayload = createEtsyPayload()
+    invalidPayload.imagePlans = invalidPayload.imagePlans.map((plan) => ({
       ...plan,
       photographyDecision: createPhotographyDecision(0),
     }))
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({
-      output_text: JSON.stringify(apiPayload),
+      output_text: JSON.stringify(invalidPayload),
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -608,7 +654,8 @@ describe('callAmazonPlannerApi', () => {
         apiMode: 'responses',
         model: 'gpt-planner-profile',
       }),
-    })).rejects.toThrow('Etsy 摄影自动判断未通过 15 镜头差异检查')
+    })).rejects.toThrow('自动纠错后仍未通过')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('uses Responses API planning with JSON schema and attached reference images', async () => {

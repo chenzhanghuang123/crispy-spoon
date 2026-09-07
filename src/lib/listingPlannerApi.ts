@@ -1215,6 +1215,20 @@ function buildEtsyListingRepairInput(previousOutput: string, errorMessage: strin
   ].join('\n')
 }
 
+function buildEtsyPlannerRepairInput(previousOutput: string, errorMessage: string) {
+  return [
+    'Repair the previous Etsy 15-shot planning JSON so it passes every required schema and photography diversity check.',
+    `Validation error: ${errorMessage}`,
+    'Preserve the product facts, Visual DNA, photography analysis, series style guide, and every valid unaffected shot exactly.',
+    'Change only the minimum conflicting or invalid imagePlans items. When a shot setup changes, keep its prompt, planMarkdown, photographyDecision, and negativePrompt coherent with the new angle, scale, lens, lighting, scene, and selling job.',
+    'The repaired campaign must still contain E01-E15 in the required order, meet every diversity minimum, and use no duplicate angleFamily + shotScale + lightingFamily + sceneFamily combination.',
+    'Do not add unsupported product facts. Return only the complete repaired JSON object.',
+    '',
+    'Previous response:',
+    previousOutput,
+  ].join('\n')
+}
+
 function buildEtsyListingInputText(
   listingText: string,
   baseDraft: AmazonPromptDraft,
@@ -1404,74 +1418,103 @@ export async function callAmazonPlannerApi(options: {
   const referenceImageDataUrls = isDeepSeekPlannerProfile
     ? []
     : options.referenceImageDataUrls ?? []
-  const response = await fetch(
-    useChatCompletions
-      ? buildApiUrl(options.profile.baseUrl, 'chat/completions', proxyConfig, useApiProxy, { prefixV1: false })
-      : buildApiUrl(options.profile.baseUrl, 'responses', proxyConfig, useApiProxy),
-    {
-    method: 'POST',
-    signal: options.signal,
-    headers: {
-      Authorization: `Bearer ${options.profile.apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    cache: 'no-store',
-    body: JSON.stringify(useChatCompletions
-      ? {
-          model,
-          messages: [
-            {
-              role: 'system',
-              content: buildChatPlannerSystemPrompt(options.baseDraft, mode, aPlusType, {
+  const request = async (repair?: { previousOutput: string; errorMessage: string }) => {
+    const requestInputText = repair
+      ? buildEtsyPlannerRepairInput(repair.previousOutput, repair.errorMessage)
+      : inputText
+    const requestReferenceImages = repair ? [] : referenceImageDataUrls
+    return fetch(
+      useChatCompletions
+        ? buildApiUrl(options.profile.baseUrl, 'chat/completions', proxyConfig, useApiProxy, { prefixV1: false })
+        : buildApiUrl(options.profile.baseUrl, 'responses', proxyConfig, useApiProxy),
+      {
+        method: 'POST',
+        signal: options.signal,
+        headers: {
+          Authorization: `Bearer ${options.profile.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        cache: 'no-store',
+        body: JSON.stringify(useChatCompletions
+          ? {
+              model,
+              messages: [
+                {
+                  role: 'system',
+                  content: buildChatPlannerSystemPrompt(options.baseDraft, mode, aPlusType, {
+                    textOnlyReferenceGuard: isDeepSeekPlannerProfile,
+                    listingImageCount,
+                    aPlusModuleSpecs,
+                    marketplaceId,
+                  }),
+                },
+                {
+                  role: 'user',
+                  content: buildChatPlannerUserContent(requestInputText, requestReferenceImages),
+                },
+              ],
+              response_format: { type: 'json_object' },
+              stream: false,
+            }
+          : {
+              model,
+              instructions: buildPlannerInstructions(options.baseDraft, mode, aPlusType, {
                 textOnlyReferenceGuard: isDeepSeekPlannerProfile,
                 listingImageCount,
                 aPlusModuleSpecs,
                 marketplaceId,
               }),
+              input: buildResponsesPlannerInput(requestInputText, requestReferenceImages),
+              text: {
+                format: {
+                  type: 'json_schema',
+                  name: mode === 'etsy' ? 'etsy_bespoke_photoshoot_plan' : mode === 'aplus' ? 'amazon_aplus_image_plan' : 'amazon_listing_image_plan',
+                  strict: true,
+                  schema,
+                },
+              },
+              stream: false,
             },
-            {
-              role: 'user',
-              content: buildChatPlannerUserContent(inputText, referenceImageDataUrls),
-            },
-          ],
-          response_format: { type: 'json_object' },
-          stream: false,
-        }
-      : {
-          model,
-          instructions: buildPlannerInstructions(options.baseDraft, mode, aPlusType, {
-            textOnlyReferenceGuard: isDeepSeekPlannerProfile,
-            listingImageCount,
-            aPlusModuleSpecs,
-            marketplaceId,
-          }),
-          input: buildResponsesPlannerInput(inputText, referenceImageDataUrls),
-          text: {
-            format: {
-              type: 'json_schema',
-              name: mode === 'etsy' ? 'etsy_bespoke_photoshoot_plan' : mode === 'aplus' ? 'amazon_aplus_image_plan' : 'amazon_listing_image_plan',
-              strict: true,
-              schema,
-            },
-          },
-          stream: false,
-        },
-    ),
-    },
-  )
+        ),
+      },
+    )
+  }
+
+  const response = await request()
 
   if (!response.ok) {
     const message = await getApiErrorMessage(response)
     throw new Error(`HTTP ${response.status}: ${message}`)
   }
   const responseResult = await readPlannerResponseText(response)
-  const payload = parsePlannerPayload(responseResult.text)
   const fallbackTitle = options.baseDraft.productTitle || inferTitleFromListingText(options.listingText)
-  return mode === 'etsy'
-    ? normalizeEtsyPlannerApiPayload(payload, marketplaceId, fallbackTitle)
-    : mode === 'aplus'
-      ? normalizeAPlusPlannerApiPayload(payload, aPlusType, aPlusGenerationTier, aPlusModuleSpecs, marketplaceId)
-      : normalizeListingPlannerApiPayload(payload, listingImageCount, marketplaceId, fallbackTitle)
+  if (mode === 'etsy') {
+    try {
+      return normalizeEtsyPlannerApiPayload(parsePlannerPayload(responseResult.text), marketplaceId, fallbackTitle)
+    } catch (error) {
+      const validationMessage = error instanceof Error ? error.message : String(error)
+      const repairResponse = await request({
+        previousOutput: responseResult.text,
+        errorMessage: validationMessage,
+      })
+      if (!repairResponse.ok) {
+        const repairError = await getApiErrorMessage(repairResponse)
+        throw new Error(`${validationMessage}\n\n自动纠错失败：HTTP ${repairResponse.status}: ${repairError}`)
+      }
+      const repairedResult = await readPlannerResponseText(repairResponse)
+      try {
+        return normalizeEtsyPlannerApiPayload(parsePlannerPayload(repairedResult.text), marketplaceId, fallbackTitle)
+      } catch (repairValidationError) {
+        const repairedMessage = repairValidationError instanceof Error ? repairValidationError.message : String(repairValidationError)
+        throw new Error(`${validationMessage}\n\n自动纠错后仍未通过：${repairedMessage}`)
+      }
+    }
+  }
+
+  const payload = parsePlannerPayload(responseResult.text)
+  return mode === 'aplus'
+    ? normalizeAPlusPlannerApiPayload(payload, aPlusType, aPlusGenerationTier, aPlusModuleSpecs, marketplaceId)
+    : normalizeListingPlannerApiPayload(payload, listingImageCount, marketplaceId, fallbackTitle)
 }
 
 export async function callEtsyListingDetailsApi(options: {
