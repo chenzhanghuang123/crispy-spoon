@@ -41,6 +41,12 @@ const PRIMARY_QUALITY = 0.82
 const FALLBACK_MAX_EDGE = 768
 const FALLBACK_QUALITY = 0.72
 const MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
+const HIGH_FIDELITY_MAX_PAYLOAD_BYTES = 18 * 1024 * 1024
+const HIGH_FIDELITY_COMPRESSION_PASSES: PlannerReferenceImageCompressionRequest[] = [
+  { maxEdge: 4096, quality: 0.96 },
+  { maxEdge: 3072, quality: 0.94 },
+  { maxEdge: 2048, quality: 0.92 },
+]
 
 function canUseCanvasCompression() {
   return typeof document !== 'undefined' && typeof Image !== 'undefined' && typeof FileReader !== 'undefined'
@@ -392,6 +398,70 @@ export async function prepareReferenceImageAndMaskPayload(
   }
 
   throw new Error(`参考图压缩后仍过大：${formatMiB(fallbackBytes)}，上限为 ${formatMiB(maxPayloadBytes)}。请删除部分参考图或换更小图片后重试。`)
+}
+
+export async function prepareHighFidelityReferenceImageAndMaskPayload(
+  dataUrls: string[],
+  maskDataUrl?: string,
+  options: PreparePlannerReferenceImagePayloadOptions = {},
+): Promise<PlannerReferenceImagePayload & { maskDataUrl?: string }> {
+  throwIfAborted(options.signal)
+
+  const originalBytes = sumPayloadBytes(dataUrls, maskDataUrl)
+  if (!dataUrls.length && !maskDataUrl) {
+    return {
+      dataUrls: [],
+      originalBytes,
+      payloadBytes: 0,
+      compressedCount: 0,
+      pass: 'none',
+      notice: '',
+    }
+  }
+
+  const maxPayloadBytes = options.maxPayloadBytes ?? HIGH_FIDELITY_MAX_PAYLOAD_BYTES
+  if (originalBytes <= maxPayloadBytes) {
+    return {
+      dataUrls,
+      maskDataUrl,
+      originalBytes,
+      payloadBytes: originalBytes,
+      compressedCount: 0,
+      pass: 'none',
+      notice: '',
+    }
+  }
+
+  const compressor = options.compressor ?? compressReferenceImageDataUrl
+  const maskCompressor = options.maskCompressor ?? compressReferenceImageAndMaskDataUrl
+  let lastPayloadBytes = originalBytes
+
+  for (let index = 0; index < HIGH_FIDELITY_COMPRESSION_PASSES.length; index++) {
+    const prepared = await compressAllWithOptionalMask(
+      dataUrls,
+      maskDataUrl,
+      HIGH_FIDELITY_COMPRESSION_PASSES[index],
+      compressor,
+      maskCompressor,
+      options.signal,
+    )
+    const payloadBytes = sumPayloadBytes(prepared.dataUrls, prepared.maskDataUrl)
+    lastPayloadBytes = payloadBytes
+    if (payloadBytes > maxPayloadBytes) continue
+
+    const pass: PlannerReferenceImagePayloadPass = index === 0 ? 'primary' : 'fallback'
+    return {
+      dataUrls: prepared.dataUrls,
+      maskDataUrl: prepared.maskDataUrl,
+      originalBytes,
+      payloadBytes,
+      compressedCount: dataUrls.length,
+      pass,
+      notice: createNotice(dataUrls.length, originalBytes, payloadBytes, pass),
+    }
+  }
+
+  throw new Error(`高保真参考图压缩后仍过大：${formatMiB(lastPayloadBytes)}，上限为 ${formatMiB(maxPayloadBytes)}。请删除部分参考图或换更小图片后重试。`)
 }
 
 export const preparePlannerReferenceImagePayload = prepareReferenceImagePayload

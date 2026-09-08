@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  prepareHighFidelityReferenceImageAndMaskPayload,
   prepareReferenceImageAndMaskPayload,
   prepareReferenceImagePayload,
   type PlannerReferenceImageCompressionRequest,
@@ -120,5 +121,75 @@ describe('prepareReferenceImageAndMaskPayload', () => {
     expect(result.maskDataUrl).toBe(dataUrlOfLength(80))
     expect(result.compressedCount).toBe(0)
     expect(result.notice).toBe('')
+  })
+})
+
+describe('prepareHighFidelityReferenceImageAndMaskPayload', () => {
+  it('preserves original reference images when they already fit the request budget', async () => {
+    const compressor = vi.fn()
+    const references = [dataUrlOfLength(200), dataUrlOfLength(300)]
+
+    const result = await prepareHighFidelityReferenceImageAndMaskPayload(references, undefined, {
+      maxPayloadBytes: 600,
+      compressor,
+    })
+
+    expect(compressor).not.toHaveBeenCalled()
+    expect(result.dataUrls).toEqual(references)
+    expect(result.payloadBytes).toBe(500)
+    expect(result.compressedCount).toBe(0)
+    expect(result.pass).toBe('none')
+  })
+
+  it('starts oversized Gemini references at 4K and high quality', async () => {
+    const requests: PlannerReferenceImageCompressionRequest[] = []
+    const compressor = vi.fn(async (_dataUrl: string, request: PlannerReferenceImageCompressionRequest) => {
+      requests.push(request)
+      return dataUrlOfLength(80, 'data:image/webp;base64,')
+    })
+
+    const result = await prepareHighFidelityReferenceImageAndMaskPayload([dataUrlOfLength(400)], undefined, {
+      maxPayloadBytes: 100,
+      compressor,
+    })
+
+    expect(compressor).toHaveBeenCalledTimes(1)
+    expect(requests[0]).toEqual({ maxEdge: 4096, quality: 0.96 })
+    expect(result.payloadBytes).toBe(80)
+    expect(result.pass).toBe('primary')
+  })
+
+  it('reduces resolution only when the 4K high-fidelity payload remains too large', async () => {
+    const requests: PlannerReferenceImageCompressionRequest[] = []
+    const compressor = vi.fn(async (_dataUrl: string, request: PlannerReferenceImageCompressionRequest) => {
+      requests.push(request)
+      return dataUrlOfLength(request.maxEdge === 4096 ? 140 : 80, 'data:image/webp;base64,')
+    })
+
+    const result = await prepareHighFidelityReferenceImageAndMaskPayload([dataUrlOfLength(400)], undefined, {
+      maxPayloadBytes: 100,
+      compressor,
+    })
+
+    expect(compressor).toHaveBeenCalledTimes(2)
+    expect(requests[1]).toEqual({ maxEdge: 3072, quality: 0.94 })
+    expect(result.payloadBytes).toBe(80)
+    expect(result.pass).toBe('fallback')
+  })
+
+  it('never degrades Gemini references below 2K to force an oversized request through', async () => {
+    const requests: PlannerReferenceImageCompressionRequest[] = []
+    const compressor = vi.fn(async (_dataUrl: string, request: PlannerReferenceImageCompressionRequest) => {
+      requests.push(request)
+      return dataUrlOfLength(140, 'data:image/webp;base64,')
+    })
+
+    await expect(prepareHighFidelityReferenceImageAndMaskPayload([dataUrlOfLength(400)], undefined, {
+      maxPayloadBytes: 100,
+      compressor,
+    })).rejects.toThrow('高保真参考图压缩后仍过大')
+
+    expect(compressor).toHaveBeenCalledTimes(3)
+    expect(requests.map((request) => request.maxEdge)).toEqual([4096, 3072, 2048])
   })
 })

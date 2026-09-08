@@ -52,7 +52,7 @@ import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
-import { prepareReferenceImageAndMaskPayload } from './lib/referenceImagePayload'
+import { prepareHighFidelityReferenceImageAndMaskPayload, prepareReferenceImageAndMaskPayload } from './lib/referenceImagePayload'
 import { getTaskHistoryCategory } from './lib/taskHistory'
 import { isAmazonListingMainSlot } from './lib/listingPlanner'
 import { clearRememberedApiCredentials, rememberApiCredentials, restoreRememberedApiCredentials } from './lib/apiCredentialStorage'
@@ -3600,7 +3600,9 @@ async function executeTask(taskId: string) {
       maskDataUrl = await ensureImageCached(task.maskImageId)
       if (!maskDataUrl) throw new Error('遮罩图片已不存在')
     }
-    const preparedPayload = await prepareReferenceImageAndMaskPayload(inputDataUrls, maskDataUrl)
+    const preparedPayload = taskProvider === 'newapi-gemini'
+      ? await prepareHighFidelityReferenceImageAndMaskPayload(inputDataUrls, maskDataUrl)
+      : await prepareReferenceImageAndMaskPayload(inputDataUrls, maskDataUrl)
     const apiInputDataUrls = preparedPayload.dataUrls
     const apiMaskDataUrl = preparedPayload.maskDataUrl
 
