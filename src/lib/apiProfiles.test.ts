@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  BANANAPRO_PLANNER_BASE_URL,
+  BANANAPRO_PLANNER_MODEL,
+  BANANAPRO_PLANNER_PROFILE_NAME,
   DEFAULT_CHAT_MODEL,
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
@@ -14,6 +17,7 @@ import {
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_RESPONSES_MODEL,
   DEFAULT_SETTINGS,
+  createBananaProPlannerProfile,
   createDefaultAmazonPlannerProfile,
   createDefaultOpenAIProfile,
   createDefaultFalProfile,
@@ -31,6 +35,27 @@ import {
   normalizeSettings,
   switchApiProfileProvider,
 } from './apiProfiles'
+
+describe('BananaPro AI planner profiles', () => {
+  it('creates an OpenAI-compatible Chat Completions profile for GPT-6.1 Sol', () => {
+    const profile = createBananaProPlannerProfile({
+      id: 'bananapro-planner',
+      apiKey: 'test-key',
+    })
+
+    expect(profile).toMatchObject({
+      id: 'bananapro-planner',
+      name: BANANAPRO_PLANNER_PROFILE_NAME,
+      provider: 'openai',
+      baseUrl: BANANAPRO_PLANNER_BASE_URL,
+      apiKey: 'test-key',
+      model: BANANAPRO_PLANNER_MODEL,
+      apiMode: 'chat',
+      codexCli: false,
+      apiProxy: false,
+    })
+  })
+})
 
 describe('mergeImportedSettings', () => {
   it('creates separate default profiles for image generation and AI planning', () => {

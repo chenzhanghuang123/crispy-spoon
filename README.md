@@ -273,6 +273,8 @@ LinAPI 可在“服务商类型”中直接选择 `LinAPI Gemini 生图`。默�
 
 DeepSeek 示例：API URL 填 `https://api.deepseek.com`，API 接口选择 `Chat Completions (/chat/completions)`，模型填 `deepseek-v4-flash`。当前 DeepSeek 官方 Chat Completions 接口只接收文本内容，本项目检测到该地址时会自动跳过参考图，仅用 Listing 文本做 AI 策划。
 
+BananaPro GPT-6.1 Sol 可在 AI 策划区域点击 `BananaPro` 快速加入。应用会自动填写 API URL `https://api.bananapro.top/v1`、策划接口 `Chat Completions (/chat/completions)` 和模型 `gpt-6.1-sol`；API Key 仍需使用者自行填写并保存在当前浏览器本地。
+
 ### 3. 反代 / OpenRouter 单连接模式
 
 如果你的反代或 OpenRouter 同一套 API URL / API Key 同时支持生图和聊天策划，可以在设置页顶部把 API 配置模式切到“反代或 OpenRouter 单连接”：

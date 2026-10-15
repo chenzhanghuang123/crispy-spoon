@@ -24,6 +24,9 @@ const DEFAULT_OPENAI_API_PROXY = readRuntimeEnv(import.meta.env.VITE_API_PROXY_A
 export const DEFAULT_IMAGES_MODEL = 'gpt-image-2'
 export const DEFAULT_RESPONSES_MODEL = 'gpt-5.5'
 export const DEFAULT_CHAT_MODEL = 'gpt-5.5'
+export const BANANAPRO_PLANNER_BASE_URL = 'https://api.bananapro.top/v1'
+export const BANANAPRO_PLANNER_MODEL = 'gpt-6.1-sol'
+export const BANANAPRO_PLANNER_PROFILE_NAME = 'BananaPro GPT-6.1 Sol'
 export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_LINAPI_BASE_URL = 'https://api.linapi.net'
@@ -345,6 +348,18 @@ export function createDefaultAmazonPlannerProfile(overrides: Partial<ApiProfile>
     name: 'AI策划',
     model: DEFAULT_RESPONSES_MODEL,
     apiMode: 'responses',
+    ...overrides,
+  })
+}
+
+export function createBananaProPlannerProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
+  return createDefaultAmazonPlannerProfile({
+    name: BANANAPRO_PLANNER_PROFILE_NAME,
+    baseUrl: BANANAPRO_PLANNER_BASE_URL,
+    model: BANANAPRO_PLANNER_MODEL,
+    apiMode: 'chat',
+    codexCli: false,
+    apiProxy: false,
     ...overrides,
   })
 }

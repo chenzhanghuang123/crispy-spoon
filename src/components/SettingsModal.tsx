@@ -4,6 +4,10 @@ import { normalizeBaseUrl } from '../lib/api'
 import { isApiProxyAvailable, isApiProxyLocked, readClientDevProxyConfig } from '../lib/devProxy'
 import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
 import {
+  BANANAPRO_PLANNER_BASE_URL,
+  BANANAPRO_PLANNER_MODEL,
+  BANANAPRO_PLANNER_PROFILE_NAME,
+  createBananaProPlannerProfile,
   createDefaultOpenAIProfile,
   createDefaultAmazonPlannerProfile,
   DEFAULT_CHAT_MODEL,
@@ -799,6 +803,36 @@ export default function SettingsModal() {
       amazonPlannerProfileId: plannerProfile.id,
     })
     showToast('已新建 AI 策划配置', 'success')
+  }
+
+  const applyBananaProPlannerPreset = () => {
+    const existingProfile = amazonPlannerProfiles.find((profile) =>
+      profile.provider === 'openai' &&
+      profile.apiMode === 'chat' &&
+      profile.model.trim() === BANANAPRO_PLANNER_MODEL &&
+      normalizeBaseUrl(profile.baseUrl) === BANANAPRO_PLANNER_BASE_URL,
+    )
+
+    if (existingProfile) {
+      commitSettings({
+        ...draft,
+        apiSetupMode: 'standard',
+        amazonPlannerProfileId: existingProfile.id,
+      })
+      showToast(`已切换到 ${BANANAPRO_PLANNER_PROFILE_NAME}`, 'success')
+      return
+    }
+
+    const plannerProfile = createBananaProPlannerProfile({
+      id: newId('planner-bananapro'),
+    })
+    commitSettings({
+      ...draft,
+      apiSetupMode: 'standard',
+      profiles: [...draft.profiles, plannerProfile],
+      amazonPlannerProfileId: plannerProfile.id,
+    })
+    showToast(`已加入 ${BANANAPRO_PLANNER_PROFILE_NAME}，请填写 API Key`, 'info')
   }
 
   const copyActiveConnectionToPlanner = () => {
@@ -1727,13 +1761,25 @@ export default function SettingsModal() {
                 </div>
 
                 {!singleConnectionMode && (
-                  <Select
-                    value={draft.amazonPlannerProfileId}
-                    onChange={(value) => commitSettings({ ...draft, amazonPlannerProfileId: String(value) })}
-                    disabled={amazonPlannerProfiles.length === 0}
-                    options={amazonPlannerProfileOptions}
-                    className="ios-field w-full px-3 py-2.5 text-sm text-[hsl(var(--primary))]"
-                  />
+                  <>
+                    <Select
+                      value={draft.amazonPlannerProfileId}
+                      onChange={(value) => commitSettings({ ...draft, amazonPlannerProfileId: String(value) })}
+                      disabled={amazonPlannerProfiles.length === 0}
+                      options={amazonPlannerProfileOptions}
+                      className="ios-field w-full px-3 py-2.5 text-sm text-[hsl(var(--primary))]"
+                    />
+                    <div className="mt-3 border-t border-blue-100 pt-3 dark:border-blue-300/10">
+                      <span className="mb-2 block text-xs font-semibold text-blue-900 dark:text-blue-100">快速套用策划配置</span>
+                      <button
+                        type="button"
+                        onClick={applyBananaProPlannerPreset}
+                        className="inline-flex h-9 items-center rounded-[var(--ios-radius-md)] bg-blue-100 px-3 text-xs font-semibold text-blue-700 transition hover:bg-blue-200 dark:bg-blue-400/15 dark:text-blue-100 dark:hover:bg-blue-400/25"
+                      >
+                        BananaPro GPT-6.1 Sol
+                      </button>
+                    </div>
+                  </>
                 )}
 
                 <div className="mt-3">
