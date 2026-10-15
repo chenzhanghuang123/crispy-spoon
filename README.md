@@ -275,6 +275,8 @@ DeepSeek 示例：API URL 填 `https://api.deepseek.com`，API 接口选择 `Cha
 
 BananaPro GPT-6.1 Sol 可在 AI 策划区域点击 `BananaPro` 快速加入。应用会自动填写 API URL `https://api.bananapro.top/v1`、策划接口 `Chat Completions (/chat/completions)` 和模型 `gpt-6.1-sol`；API Key 仍需使用者自行填写并保存在当前浏览器本地。
 
+AI 策划配置可点击“检测可用模型”，应用会使用当前 URL 和 API Key 请求 OpenAI 兼容的 `GET /v1/models`，列出服务端为该密钥返回的策划候选模型，并提示当前模型是否可用。明显的生图模型会被排除；如果该 Key 只返回生图模型，应用会明确提示其不能用于 AI 策划。检测不会自动更换当前模型。
+
 ### 3. 反代 / OpenRouter 单连接模式
 
 如果你的反代或 OpenRouter 同一套 API URL / API Key 同时支持生图和聊天策划，可以在设置页顶部把 API 配置模式切到“反代或 OpenRouter 单连接”：

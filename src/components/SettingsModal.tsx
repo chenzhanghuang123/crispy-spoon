@@ -41,6 +41,7 @@ import {
   validateApiProfile,
 } from '../lib/apiProfiles'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
+import { isLikelyImageGenerationModel, listAvailableModels } from '../lib/modelApi'
 import { DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type CustomProviderDefinition } from '../types'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
@@ -49,7 +50,7 @@ import Select from './Select'
 import { Sheet, useSheetDrag } from './Sheet'
 import { Checkbox } from './Checkbox'
 import ViewportTooltip from './ViewportTooltip'
-import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, ExportIcon, ImportIcon, DragHandleIcon, LinkIcon, PhotoIcon, WrenchIcon } from './icons'
+import { ChevronDownIcon, CloseIcon, CopyIcon, PlusIcon, TrashIcon, ExportIcon, ImportIcon, DragHandleIcon, LinkIcon, PhotoIcon, RefreshIcon, WrenchIcon } from './icons'
 
 function newId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
@@ -311,6 +312,7 @@ export default function SettingsModal() {
   const importInputRef = useRef<HTMLInputElement>(null)
   const profileMenuRef = useRef<HTMLDivElement>(null)
   const profileMenuTriggerRef = useRef<HTMLButtonElement>(null)
+  const plannerModelRequestRef = useRef<AbortController | null>(null)
 
   const profileImportUrlTooltipTimerRef = useRef<number | null>(null)
   const duplicateProfileTooltipTimerRef = useRef<number | null>(null)
@@ -322,6 +324,10 @@ export default function SettingsModal() {
   const [timeoutInput, setTimeoutInput] = useState(String(getActiveApiProfile(settings).timeout))
   const [showApiKey, setShowApiKey] = useState(false)
   const [showPlannerApiKey, setShowPlannerApiKey] = useState(false)
+  const [plannerAvailableModels, setPlannerAvailableModels] = useState<string[]>([])
+  const [plannerDiscoveredModelCount, setPlannerDiscoveredModelCount] = useState(0)
+  const [plannerModelLookupState, setPlannerModelLookupState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+  const [plannerModelLookupMessage, setPlannerModelLookupMessage] = useState('')
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [profileMenuMaxHeight, setProfileMenuMaxHeight] = useState(DEFAULT_DROPDOWN_MAX_HEIGHT)
   const [showCustomProviderImport, setShowCustomProviderImport] = useState(false)
@@ -425,6 +431,14 @@ export default function SettingsModal() {
   const plannerConnectionProfile = plannerUsesActiveConnection ? activeProfile : selectedAmazonPlannerProfile
   const plannerBaseUrl = plannerConnectionProfile?.baseUrl ?? DEFAULT_SETTINGS.baseUrl
   const plannerApiKey = plannerConnectionProfile?.apiKey ?? ''
+  const plannerModelIsAvailable = plannerAvailableModels.includes(plannerModel.trim())
+  const plannerModelLookupDisplayMessage = plannerModelLookupState === 'success' && plannerDiscoveredModelCount > 0
+    ? plannerAvailableModels.length === 0
+      ? `服务端返回 ${plannerDiscoveredModelCount} 个模型，但全部是生图模型，不能用于 AI 策划。`
+      : plannerModelIsAvailable
+        ? `服务端返回 ${plannerDiscoveredModelCount} 个模型；排除明显的生图模型后，当前策划模型可用。`
+        : `服务端返回 ${plannerDiscoveredModelCount} 个模型，但当前策划模型 ${plannerModel || '（空）'} 不在可选列表中。`
+    : plannerModelLookupMessage
   const selectedPlannerUsesOfficialDeepSeek = effectiveAmazonPlannerProfile
     ? isOfficialDeepSeekPlannerProfile(effectiveAmazonPlannerProfile)
     : false
@@ -440,6 +454,17 @@ export default function SettingsModal() {
         value: profile.id,
       }))
     : [{ label: '暂无 Chat/Responses 策划配置', value: '' }]
+
+  useEffect(() => {
+    plannerModelRequestRef.current?.abort()
+    plannerModelRequestRef.current = null
+    setPlannerAvailableModels([])
+    setPlannerDiscoveredModelCount(0)
+    setPlannerModelLookupState('idle')
+    setPlannerModelLookupMessage('')
+  }, [plannerBaseUrl, plannerApiKey, plannerConnectionProfile?.id])
+
+  useEffect(() => () => plannerModelRequestRef.current?.abort(), [])
 
   const wasSettingsOpenRef = useRef(false)
 
@@ -833,6 +858,56 @@ export default function SettingsModal() {
       amazonPlannerProfileId: plannerProfile.id,
     })
     showToast(`已加入 ${BANANAPRO_PLANNER_PROFILE_NAME}，请填写 API Key`, 'info')
+  }
+
+  const loadPlannerModels = async () => {
+    if (!plannerConnectionProfile || !plannerBaseUrl.trim() || !plannerApiKey.trim()) {
+      showToast('请先填写 AI 策划 API URL 和 API Key', 'error')
+      return
+    }
+
+    plannerModelRequestRef.current?.abort()
+    const controller = new AbortController()
+    plannerModelRequestRef.current = controller
+    setPlannerModelLookupState('loading')
+    setPlannerModelLookupMessage('正在读取当前密钥可用的模型...')
+
+    try {
+      const models = await listAvailableModels({
+        baseUrl: plannerBaseUrl,
+        apiKey: plannerApiKey,
+        apiProxy: plannerConnectionProfile.apiProxy,
+      }, controller.signal)
+      if (controller.signal.aborted) return
+
+      const plannerModels = models.filter((model) => !isLikelyImageGenerationModel(model))
+      setPlannerAvailableModels(plannerModels)
+      setPlannerDiscoveredModelCount(models.length)
+      setPlannerModelLookupState('success')
+      if (models.length === 0) {
+        setPlannerModelLookupMessage('接口请求成功，但服务端没有返回可用模型。')
+        showToast('服务端没有返回可用模型', 'info')
+      } else if (plannerModels.length === 0) {
+        setPlannerModelLookupMessage(`服务端返回 ${models.length} 个模型，但全部是生图模型，不能用于 AI 策划。`)
+        showToast('该 Key 只返回生图模型，不能用于 AI 策划', 'error')
+      } else if (plannerModels.includes(plannerModel.trim())) {
+        setPlannerModelLookupMessage(`已读取 ${models.length} 个模型，当前策划模型可用。`)
+        showToast(`当前模型可用，共读取到 ${models.length} 个模型`, 'success')
+      } else {
+        setPlannerModelLookupMessage(`已读取 ${models.length} 个模型，但当前策划模型 ${plannerModel || '（空）'} 不在可选列表中。`)
+        showToast('当前模型不可用，请从列表中选择', 'info')
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return
+      const message = error instanceof Error ? error.message : String(error)
+      setPlannerAvailableModels([])
+      setPlannerDiscoveredModelCount(0)
+      setPlannerModelLookupState('error')
+      setPlannerModelLookupMessage(`读取模型失败：${message}`)
+      showToast('读取可用模型失败', 'error')
+    } finally {
+      if (plannerModelRequestRef.current === controller) plannerModelRequestRef.current = null
+    }
   }
 
   const copyActiveConnectionToPlanner = () => {
@@ -1878,8 +1953,19 @@ export default function SettingsModal() {
                     />
                   </div>
 
-                  <label className="block">
-                    <span className="mb-1.5 block text-sm text-blue-900 dark:text-blue-100">策划模型 ID</span>
+                  <div className="block">
+                    <div className="mb-1.5 flex items-center justify-between gap-2">
+                      <span className="text-sm text-blue-900 dark:text-blue-100">策划模型 ID</span>
+                      <button
+                        type="button"
+                        onClick={loadPlannerModels}
+                        disabled={plannerModelLookupState === 'loading' || !plannerBaseUrl.trim() || !plannerApiKey.trim()}
+                        className="inline-flex h-7 items-center gap-1 rounded-lg bg-white/70 px-2 text-[11px] font-semibold text-blue-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-45 dark:bg-white/[0.08] dark:text-blue-200 dark:hover:bg-white/[0.12]"
+                      >
+                        <RefreshIcon className={`h-3 w-3 ${plannerModelLookupState === 'loading' ? 'animate-spin' : ''}`} />
+                        {plannerModelLookupState === 'loading' ? '检测中' : '检测可用模型'}
+                      </button>
+                    </div>
                     <input
                       value={plannerModel}
                       onChange={(e) => updatePlannerProfile({ model: e.target.value })}
@@ -1888,7 +1974,35 @@ export default function SettingsModal() {
                       placeholder={getDefaultModelForMode(plannerApiMode)}
                       className="ios-field w-full px-3 py-2.5 text-sm text-[hsl(var(--primary))]"
                     />
-                  </label>
+                    {plannerModelLookupState !== 'idle' && (
+                      <div className={`mt-2 rounded-lg border px-3 py-2 text-xs leading-relaxed ${
+                        plannerModelLookupState === 'error' || (plannerModelLookupState === 'success' && plannerDiscoveredModelCount > 0 && !plannerModelIsAvailable)
+                          ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-400/25 dark:bg-amber-400/10 dark:text-amber-100'
+                          : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-400/25 dark:bg-emerald-400/10 dark:text-emerald-100'
+                      }`}>
+                        {plannerModelLookupDisplayMessage}
+                      </div>
+                    )}
+                    {plannerAvailableModels.length > 0 && (
+                      <div className="mt-2">
+                        <span className="mb-1.5 block text-xs font-medium text-blue-900 dark:text-blue-100">从当前密钥可用模型中选择</span>
+                        <Select
+                          value={plannerModelIsAvailable ? plannerModel.trim() : ''}
+                          onChange={(value) => {
+                            const model = String(value)
+                            if (model) updatePlannerProfile({ model }, true)
+                          }}
+                          options={[
+                            ...(!plannerModelIsAvailable
+                              ? [{ label: `当前模型不可用：${plannerModel || '未填写'}`, value: '' }]
+                              : []),
+                            ...plannerAvailableModels.map((model) => ({ label: model, value: model })),
+                          ]}
+                          className="ios-field w-full px-3 py-2.5 text-sm text-[hsl(var(--primary))]"
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
                 {selectedPlannerUsesOfficialDeepSeek && (
                   <div data-selectable-text className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-400/25 dark:bg-amber-400/10 dark:text-amber-100">

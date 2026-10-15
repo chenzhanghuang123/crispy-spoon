@@ -249,6 +249,7 @@ function getPlannerFailureDetail(err: unknown): string {
   const message = rawMessage.trim() || '未知错误'
   const lower = message.toLowerCase()
   const hints: string[] = []
+  const hasNoAvailableChannel = /无可用渠道|no available channel|distributor/.test(lower)
 
   if (/401|invalid api key|incorrect api key|unauthorized|forbidden|权限|认证|鉴权/.test(lower)) {
     hints.push('请检查 AI 策划配置里的 API Key 是否正确，并确认该 Key 有所选聊天/策划接口权限。')
@@ -256,7 +257,9 @@ function getPlannerFailureDetail(err: unknown): string {
   if (/404|not found|responses|endpoint|route|路径|不存在/.test(lower)) {
     hints.push('请确认 AI 策划配置的 API URL 支持当前接口：DeepSeek 请使用 Chat Completions（/chat/completions），不要使用只开放 /v1/images 的图片中转。')
   }
-  if (/model|does not exist|unsupported|not supported|模型/.test(lower)) {
+  if (hasNoAvailableChannel) {
+    hints.push('当前 API Key 所属分组没有该模型的可用渠道。请在设置 -> AI 策划中点击“检测可用模型”并选择服务端返回的模型，或更换有该模型权限的 Key。')
+  } else if (/model|does not exist|unsupported|not supported|模型/.test(lower)) {
     hints.push('请确认 AI 策划配置使用的是文本/多模态模型，而不是 gpt-image-2。')
   }
   if (/json_schema|schema|structured|text\.format|response_format|strict/.test(lower)) {
