@@ -49,6 +49,29 @@ describe('prepareReferenceImagePayload', () => {
     expect(result.notice).toContain('本次已压缩 2 张参考图')
   })
 
+  it('can encode independent references concurrently while preserving their order', async () => {
+    let active = 0
+    let maxActive = 0
+    const references = [dataUrlOfLength(200, 'data:image/png;base64,'), dataUrlOfLength(300, 'data:image/png;base64,')]
+    const compressor = vi.fn(async (dataUrl: string) => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      active -= 1
+      return dataUrl
+    })
+
+    const result = await prepareReferenceImagePayload(references, {
+      maxPayloadBytes: 600,
+      compressor,
+      parallel: true,
+    })
+
+    expect(maxActive).toBe(2)
+    expect(result.dataUrls).toEqual(references)
+    expect(compressor).toHaveBeenCalledTimes(2)
+  })
+
   it('falls back to smaller compression when the primary pass is still too large', async () => {
     const compressor = vi.fn(async (_dataUrl: string, request: PlannerReferenceImageCompressionRequest) =>
       dataUrlOfLength(request.maxEdge === 1024 ? 80 : 40, 'data:image/webp;base64,'),

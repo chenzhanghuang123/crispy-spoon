@@ -52,7 +52,7 @@ import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { validateMaskMatchesImage } from './lib/canvasImage'
 import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
-import { prepareHighFidelityReferenceImageAndMaskPayload, prepareReferenceImageAndMaskPayload } from './lib/referenceImagePayload'
+import { prepareHighFidelityReferenceImageAndMaskPayload, prepareReferenceImageAndMaskPayload, type PlannerReferenceImagePayload } from './lib/referenceImagePayload'
 import { getTaskHistoryCategory } from './lib/taskHistory'
 import { isAmazonListingMainSlot } from './lib/listingPlanner'
 import { clearRememberedApiCredentials, rememberApiCredentials, restoreRememberedApiCredentials } from './lib/apiCredentialStorage'
@@ -78,6 +78,9 @@ const falRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const agentRoundControllers = new Map<string, AbortController>()
+type PreparedReferencePayload = PlannerReferenceImagePayload & { maskDataUrl?: string }
+const etsyReferencePayloadCache = new Map<string, Promise<PreparedReferencePayload>>()
+const MAX_ETSY_REFERENCE_PAYLOAD_CACHE_ENTRIES = 4
 const OPENAI_INTERRUPTED_ERROR = '请求中断'
 const AGENT_STOPPED_MESSAGE = '已停止生成。'
 const AGENT_CONVERSATION_TITLE_MAX_LENGTH = 28
@@ -210,6 +213,54 @@ function cacheImage(id: string, dataUrl: string) {
     const oldestKey = imageCache.keys().next().value
     if (oldestKey == null) break
     imageCache.delete(oldestKey)
+  }
+}
+
+function getEtsyReferencePayloadKey(
+  task: TaskRecord,
+  inputDataUrls: string[],
+  maskDataUrl?: string,
+) {
+  return [
+    task.apiProfileId ?? '',
+    task.apiProvider ?? '',
+    task.apiMode ?? '',
+    task.apiModel ?? '',
+    task.maskImageId ?? '',
+    maskDataUrl?.length ?? 0,
+    ...task.inputImageIds.map((id, index) => `${id}:${inputDataUrls[index]?.length ?? 0}`),
+  ].join('|')
+}
+
+async function prepareEtsyReferencePayload(
+  task: TaskRecord,
+  inputDataUrls: string[],
+  maskDataUrl?: string,
+): Promise<PreparedReferencePayload> {
+  const key = getEtsyReferencePayloadKey(task, inputDataUrls, maskDataUrl)
+  const cached = etsyReferencePayloadCache.get(key)
+  if (cached) {
+    etsyReferencePayloadCache.delete(key)
+    etsyReferencePayloadCache.set(key, cached)
+    return cached
+  }
+
+  const isHighFidelityProvider = task.apiProvider === 'newapi-gemini'
+  const payloadPromise = isHighFidelityProvider
+    ? prepareHighFidelityReferenceImageAndMaskPayload(inputDataUrls, maskDataUrl, { parallel: true })
+    : prepareReferenceImageAndMaskPayload(inputDataUrls, maskDataUrl, { parallel: true })
+  etsyReferencePayloadCache.set(key, payloadPromise)
+  while (etsyReferencePayloadCache.size > MAX_ETSY_REFERENCE_PAYLOAD_CACHE_ENTRIES) {
+    const oldestKey = etsyReferencePayloadCache.keys().next().value
+    if (oldestKey == null || oldestKey === key) break
+    etsyReferencePayloadCache.delete(oldestKey)
+  }
+
+  try {
+    return await payloadPromise
+  } catch (error) {
+    if (etsyReferencePayloadCache.get(key) === payloadPromise) etsyReferencePayloadCache.delete(key)
+    throw error
   }
 }
 
@@ -1939,7 +1990,13 @@ export async function initStore() {
 }
 
 /** 提交新任务 */
-export async function submitTask(options: { allowFullMask?: boolean; useCurrentApiProfileWhenReusedMissing?: boolean } = {}): Promise<boolean> {
+export async function submitTask(options: {
+  allowFullMask?: boolean
+  useCurrentApiProfileWhenReusedMissing?: boolean
+  promptOverride?: string
+  taskCategoryOverride?: NonNullable<TaskRecord['category']>
+  preserveInputAfterSubmit?: boolean
+} = {}): Promise<boolean> {
   const { settings, prompt, inputImages, maskDraft, params, reusedTaskApiProfileId, reusedTaskApiProfileName, reusedTaskApiProfileMissing, pendingTaskCategory, showToast, setConfirmDialog } =
     useStore.getState()
 
@@ -1988,12 +2045,15 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     return false
   }
 
-  const trimmedPrompt = prompt.trim()
+  const trimmedPrompt = (options.promptOverride ?? prompt).trim()
   if (!trimmedPrompt) {
     showToast('请输入提示词', 'error')
     return false
   }
-  const category = resolvePendingTaskCategory(pendingTaskCategory, trimmedPrompt)
+  const category = options.taskCategoryOverride
+    ? removeUnsupportedStyleReference(options.taskCategoryOverride)
+    : resolvePendingTaskCategory(pendingTaskCategory, trimmedPrompt)
+  const isEtsyTask = category.workflow === 'etsy'
 
   let orderedInputImages = inputImages
   let maskImageId: string | null = null
@@ -2042,8 +2102,12 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   }
 
   // 持久化输入图片到 IndexedDB（此前只在内存缓存中）
-  for (const img of orderedInputImages) {
-    await storeImage(img.dataUrl)
+  if (isEtsyTask) {
+    await Promise.all(orderedInputImages.map((img) => storeImage(img.dataUrl)))
+  } else {
+    for (const img of orderedInputImages) {
+      await storeImage(img.dataUrl)
+    }
   }
 
   const normalizedParams = normalizeParamsForSettings(params, requestSettings, { hasInputImages: orderedInputImages.length > 0 })
@@ -2079,7 +2143,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
   await putTask(task)
   useStore.getState().showToast('任务已提交', 'success')
 
-  if (settings.clearInputAfterSubmit) {
+  if (settings.clearInputAfterSubmit && !options.preserveInputAfterSubmit) {
     useStore.getState().setPrompt('')
     useStore.getState().clearInputImages()
   }
@@ -3588,21 +3652,33 @@ async function executeTask(taskId: string) {
   }
 
   try {
-    // 获取输入图片 data URLs
-    const inputDataUrls: string[] = []
-    for (const imgId of task.inputImageIds) {
-      const dataUrl = await ensureImageCached(imgId)
-      if (!dataUrl) throw new Error('输入图片已不存在')
-      inputDataUrls.push(dataUrl)
-    }
+    // Etsy 的每个镜头会复用同一组参考图；并行读取可减少 IndexedDB 等待。
+    const isEtsyTask = task.category?.workflow === 'etsy'
+    const inputDataUrls = isEtsyTask
+      ? await Promise.all(task.inputImageIds.map(async (imgId) => {
+          const dataUrl = await ensureImageCached(imgId)
+          if (!dataUrl) throw new Error('输入图片已不存在')
+          return dataUrl
+        }))
+      : await (async () => {
+          const dataUrls: string[] = []
+          for (const imgId of task.inputImageIds) {
+            const dataUrl = await ensureImageCached(imgId)
+            if (!dataUrl) throw new Error('输入图片已不存在')
+            dataUrls.push(dataUrl)
+          }
+          return dataUrls
+        })()
     let maskDataUrl: string | undefined
     if (task.maskImageId) {
       maskDataUrl = await ensureImageCached(task.maskImageId)
       if (!maskDataUrl) throw new Error('遮罩图片已不存在')
     }
-    const preparedPayload = taskProvider === 'newapi-gemini'
-      ? await prepareHighFidelityReferenceImageAndMaskPayload(inputDataUrls, maskDataUrl)
-      : await prepareReferenceImageAndMaskPayload(inputDataUrls, maskDataUrl)
+    const preparedPayload = isEtsyTask
+      ? await prepareEtsyReferencePayload(task, inputDataUrls, maskDataUrl)
+      : taskProvider === 'newapi-gemini'
+        ? await prepareHighFidelityReferenceImageAndMaskPayload(inputDataUrls, maskDataUrl)
+        : await prepareReferenceImageAndMaskPayload(inputDataUrls, maskDataUrl)
     const apiInputDataUrls = preparedPayload.dataUrls
     const apiMaskDataUrl = preparedPayload.maskDataUrl
 

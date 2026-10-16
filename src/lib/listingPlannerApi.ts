@@ -51,6 +51,7 @@ interface PlannerApiPayload {
   seriesStyleGuide?: unknown
   visualDna?: Partial<Record<keyof EtsyVisualDna, unknown>>
   photographyAnalysis?: Partial<Record<keyof EtsyPhotographyAnalysis, unknown>>
+  shotOutline?: Array<Partial<EtsyShotOutline>>
   imagePlans?: Array<Partial<AmazonImagePlan>>
   aPlusPlans?: Array<Partial<AmazonAPlusPlan>>
 }
@@ -101,6 +102,31 @@ export interface PlannerApiResult {
   aPlusType?: APlusContentType
   etsyVisualDna?: EtsyVisualDna | null
   etsyPhotographyAnalysis?: EtsyPhotographyAnalysis | null
+  etsyShotGroup?: EtsyShotGroup
+}
+
+export type EtsyShotGroup = 'original' | 'additional'
+
+export interface EtsyPlannerCampaignContext {
+  visualDna: EtsyVisualDna
+  photographyAnalysis: EtsyPhotographyAnalysis
+  plans: AmazonImagePlan[]
+}
+
+function getEtsyShotGroupSlots(group?: EtsyShotGroup): string[] {
+  const slots = getEtsyImageSlots()
+  return group === 'original' ? slots.slice(0, ETSY_ORIGINAL_SHOT_COUNT)
+    : group === 'additional' ? slots.slice(ETSY_ORIGINAL_SHOT_COUNT)
+      : slots
+}
+
+export function mergeEtsyShotGroups(existing: AmazonImagePlan[], incoming: AmazonImagePlan[]): AmazonImagePlan[] {
+  const bySlot = new Map(existing.map((plan) => [plan.slot, plan]))
+  for (const plan of incoming) bySlot.set(plan.slot, plan)
+  return getEtsyImageSlots().flatMap((slot) => {
+    const plan = bySlot.get(slot)
+    return plan ? [plan] : []
+  })
 }
 
 export interface EtsyListingApiResult {
@@ -235,6 +261,25 @@ const ETSY_LENS_CLASSES = ['ultra-wide', 'wide', 'normal', 'short-telephoto', 'm
 const ETSY_LIGHTING_FAMILIES = ['soft-studio', 'raking-texture', 'cross-polarized', 'backlit-translucency', 'window-daylight', 'hard-directional', 'mixed-practical', 'edge-defined-low-key', 'high-key-shadowless', 'outdoor-natural'] as const
 const ETSY_SCENE_FAMILIES = ['seamless-studio', 'editorial-still-life', 'material-macro', 'scale-infographic', 'craft-workbench', 'active-use', 'contextual-interior', 'architectural-environment', 'nature-outdoor', 'gift-or-keepsake'] as const
 
+const ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS = {
+  angleFamily: { type: 'string', enum: ETSY_ANGLE_FAMILIES },
+  shotScale: { type: 'string', enum: ETSY_SHOT_SCALES },
+  lensClass: { type: 'string', enum: ETSY_LENS_CLASSES },
+  lightingFamily: { type: 'string', enum: ETSY_LIGHTING_FAMILIES },
+  sceneFamily: { type: 'string', enum: ETSY_SCENE_FAMILIES },
+} as const
+
+type EtsyPhotographyCategory = keyof typeof ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS
+type EtsyPhotographyCategories = Pick<EtsyShotPhotographyDecision, EtsyPhotographyCategory>
+type EtsyShotOutline = EtsyPhotographyCategories & { slot: string; label: string; concept: string }
+
+interface EtsyPlannerRequestStage {
+  name: string
+  instructions: string
+  inputText: string
+  schema: object
+}
+
 const ETSY_LENS_CLASS_ALIASES: Record<string, (typeof ETSY_LENS_CLASSES)[number]> = {
   'normal-lens': 'normal',
   'normal-prime': 'normal',
@@ -271,8 +316,7 @@ const ETSY_PHOTOGRAPHY_DECISION_SCHEMA = {
   required: ['productSuitability', 'angleFamily', 'angle', 'shotScale', 'framing', 'cameraSystem', 'lensClass', 'lens', 'exposure', 'focusStrategy', 'lightingFamily', 'lighting', 'sceneFamily', 'scene', 'differentiation'],
 } as const
 
-function createEtsyPlannerSchema() {
-  const slots = getEtsyImageSlots()
+function createEtsyPlannerSchema(slots = getEtsyImageSlots()) {
   return {
     type: 'object',
     additionalProperties: false,
@@ -287,8 +331,8 @@ function createEtsyPlannerSchema() {
       },
       imagePlans: {
         type: 'array',
-        minItems: ETSY_SHOT_COUNT,
-        maxItems: ETSY_SHOT_COUNT,
+        minItems: slots.length,
+        maxItems: slots.length,
         items: {
           type: 'object',
           additionalProperties: false,
@@ -504,20 +548,38 @@ function getPlannerTextFromEvent(event: Record<string, unknown>): string {
   return ''
 }
 
-async function readPlannerTextFromSseResponse(response: Response): Promise<PlannerResponseTextResult> {
+function createPlannerStreamCollector(requireCompletion: boolean) {
   let completedText = ''
   let outputItemText = ''
   let doneText = ''
   let deltaText = ''
   let webResearchUsed = false
+  let sawChatDelta = false
+  let chatCompleted = false
+  let sawResponsesDelta = false
+  let responsesCompleted = false
 
-  await readJsonServerSentEvents(response, (event) => {
+  const onEvent = (event: Record<string, unknown>) => {
+    assertPlannerOutputComplete(event)
     if (hasWebSearchCall(event) || hasWebSearchCall(event.response) || hasWebSearchCall(event.item)) webResearchUsed = true
+    const choices = Array.isArray(event.choices) ? event.choices : []
+    for (const choice of choices) {
+      if (!isRecordValue(choice) || (typeof choice.index === 'number' && choice.index !== 0)) continue
+      if (choice.finish_reason === 'stop') chatCompleted = true
+      if (!isRecordValue(choice.delta)) continue
+      sawChatDelta = true
+      // Chat fragments may be only a space; trimming them changes the prompt.
+      if (typeof choice.delta.content === 'string') deltaText += choice.delta.content
+    }
+    if (choices.some((choice) => isRecordValue(choice) && isRecordValue(choice.delta))) return
+
     const type = getStringValue(event, 'type')
     if (type === 'response.output_text.delta') {
+      sawResponsesDelta = true
       deltaText += getStringValue(event, 'delta') ?? ''
       return
     }
+    if (type === 'response.completed') responsesCompleted = true
 
     const text = getPlannerTextFromEvent(event)
     if (!text) return
@@ -526,42 +588,48 @@ async function readPlannerTextFromSseResponse(response: Response): Promise<Plann
     else if (type === 'response.output_item.done') outputItemText = text
     else if (type === 'response.output_text.done' || type === 'response.content_part.done') doneText = text
     else if (!type) deltaText += text
-  })
+  }
 
-  return {
-    text: completedText.trim() || outputItemText.trim() || doneText.trim() || deltaText.trim(),
-    webResearchUsed,
+  const result = (): PlannerResponseTextResult => {
+    if (requireCompletion && ((sawChatDelta && !chatCompleted) || (sawResponsesDelta && !responsesCompleted))) {
+      throw new Error('AI 策划流式响应中途结束，未收到完整完成标记。请重试；若反复发生，请联系服务商检查流式连接和上游渠道。')
+    }
+    return {
+      text: completedText.trim() || outputItemText.trim() || doneText.trim() || deltaText.trim(),
+      webResearchUsed,
+    }
+  }
+  return { onEvent, result }
+}
+
+function assertPlannerOutputComplete(payload: unknown): void {
+  if (!isRecordValue(payload)) return
+  const response = isRecordValue(payload.response) ? payload.response : payload
+  if (payload.type === 'response.incomplete' || response.status === 'incomplete') {
+    throw new Error('AI 策划输出未完成，可能达到服务商输出长度限制。请让服务商检查模型的输出上限。')
+  }
+  const choices = Array.isArray(payload.choices) ? payload.choices : []
+  for (const choice of choices) {
+    if (!isRecordValue(choice) || (typeof choice.index === 'number' && choice.index !== 0)) continue
+    if (choice.finish_reason === 'length') {
+      throw new Error('AI 策划输出达到服务商长度限制，策划方案可能被截断。请让服务商提高模型的输出上限。')
+    }
+    if (choice.finish_reason === 'content_filter') {
+      throw new Error('AI 策划输出被服务商内容过滤中断，请检查产品描述或联系服务商。')
+    }
   }
 }
 
-async function readPlannerTextFromSseText(rawText: string): Promise<PlannerResponseTextResult> {
-  let completedText = ''
-  let outputItemText = ''
-  let doneText = ''
-  let deltaText = ''
-  let webResearchUsed = false
+async function readPlannerTextFromSseResponse(response: Response, requireCompletion: boolean): Promise<PlannerResponseTextResult> {
+  const collector = createPlannerStreamCollector(requireCompletion)
+  await readJsonServerSentEvents(response, collector.onEvent)
+  return collector.result()
+}
 
-  await readJsonServerSentEventText(rawText, (event) => {
-    if (hasWebSearchCall(event) || hasWebSearchCall(event.response) || hasWebSearchCall(event.item)) webResearchUsed = true
-    const type = getStringValue(event, 'type')
-    if (type === 'response.output_text.delta') {
-      deltaText += getStringValue(event, 'delta') ?? ''
-      return
-    }
-
-    const text = getPlannerTextFromEvent(event)
-    if (!text) return
-
-    if (type === 'response.completed') completedText = text
-    else if (type === 'response.output_item.done') outputItemText = text
-    else if (type === 'response.output_text.done' || type === 'response.content_part.done') doneText = text
-    else if (!type) deltaText += text
-  })
-
-  return {
-    text: completedText.trim() || outputItemText.trim() || doneText.trim() || deltaText.trim(),
-    webResearchUsed,
-  }
+async function readPlannerTextFromSseText(rawText: string, requireCompletion: boolean): Promise<PlannerResponseTextResult> {
+  const collector = createPlannerStreamCollector(requireCompletion)
+  await readJsonServerSentEventText(rawText, collector.onEvent)
+  return collector.result()
 }
 
 function isJsonContentType(contentType: string): boolean {
@@ -574,9 +642,9 @@ function truncateForError(text: string): string {
   return `${trimmed.slice(0, 1200)}...`
 }
 
-async function readPlannerResponseText(response: Response): Promise<PlannerResponseTextResult> {
+async function readPlannerResponseText(response: Response, requireCompletion = false): Promise<PlannerResponseTextResult> {
   if (isEventStreamResponse(response)) {
-    const result = await readPlannerTextFromSseResponse(response)
+    const result = await readPlannerTextFromSseResponse(response, requireCompletion)
     if (!result.text) throw new Error('AI 策划流式接口未返回文本内容')
     return result
   }
@@ -585,7 +653,7 @@ async function readPlannerResponseText(response: Response): Promise<PlannerRespo
   if (!rawText.trim()) throw new Error('AI 策划接口返回空内容')
 
   if (looksLikeServerSentEvents(rawText)) {
-    const result = await readPlannerTextFromSseText(rawText)
+    const result = await readPlannerTextFromSseText(rawText, requireCompletion)
     if (!result.text) throw new Error('AI 策划流式接口未返回文本内容')
     return result
   }
@@ -603,6 +671,7 @@ async function readPlannerResponseText(response: Response): Promise<PlannerRespo
     throw new Error(`AI 策划接口返回了无法解析的 JSON：${message}\n\n${truncateForError(rawText)}`)
   }
 
+  assertPlannerOutputComplete(payload)
   const text = extractResponseText(payload)
   if (!text) throw new Error('AI 策划接口未返回文本内容')
   return { text, webResearchUsed: hasWebSearchCall(payload) }
@@ -882,38 +951,38 @@ function normalizeEtsyPhotographyDecision(plan: AmazonImagePlan): EtsyShotPhotog
   const decision = Object.fromEntries(
     ETSY_PHOTOGRAPHY_DECISION_FIELDS.map((field) => [field, normalizePlannerText(source?.[field])]),
   ) as unknown as EtsyShotPhotographyDecision
-  const categoricalFields: Array<[keyof EtsyShotPhotographyDecision, readonly string[]]> = [
-    ['angleFamily', ETSY_ANGLE_FAMILIES],
-    ['shotScale', ETSY_SHOT_SCALES],
-    ['lensClass', ETSY_LENS_CLASSES],
-    ['lightingFamily', ETSY_LIGHTING_FAMILIES],
-    ['sceneFamily', ETSY_SCENE_FAMILIES],
-  ]
-  for (const [field, allowedValues] of categoricalFields) {
-    decision[field] = normalizePhotographyCategory(
-      decision[field],
+  return { ...decision, ...normalizeEtsyPhotographyCategories(decision, plan.slot) }
+}
+
+function normalizeEtsyPhotographyCategories(source: Partial<EtsyPhotographyCategories>, slot: string): EtsyPhotographyCategories {
+  const categories = {} as EtsyPhotographyCategories
+  for (const field of Object.keys(ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS) as EtsyPhotographyCategory[]) {
+    const allowedValues: readonly string[] = ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS[field].enum
+    categories[field] = normalizePhotographyCategory(
+      normalizePlannerText(source[field]),
       allowedValues,
       field === 'lensClass' ? ETSY_LENS_CLASS_ALIASES : undefined,
     )
-    if (!allowedValues.includes(decision[field])) {
-      throw new Error(`Etsy 镜头 ${plan.slot} 的 ${field} 不在摄影自动判断分类中：${decision[field]}`)
+    if (!allowedValues.includes(categories[field])) {
+      throw new Error(`Etsy 镜头 ${slot} 的 ${field} 不在摄影自动判断分类中：${categories[field]}`)
     }
   }
-  return decision
+  return categories
 }
 
 function normalizeDiversityKey(value: string): string {
   return value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-')
 }
 
-function assertEtsyPhotographyDiversity(plans: AmazonImagePlan[]): void {
-  const decisions = plans.map((plan) => plan.photographyDecision).filter((item): item is EtsyShotPhotographyDecision => Boolean(item))
-  const minimums: Array<[keyof EtsyShotPhotographyDecision, number, string]> = [
-    ['angleFamily', 5, '角度类型'],
-    ['shotScale', 4, '景别'],
-    ['lensClass', 4, '镜头/焦段'],
-    ['lightingFamily', 4, '布光类型'],
-    ['sceneFamily', 5, '场景类型'],
+function assertEtsyPhotographyDiversity(plans: Array<{ slot: string; photographyDecision?: EtsyPhotographyCategories }>): void {
+  const decisions = plans.map((plan) => plan.photographyDecision).filter((item): item is EtsyPhotographyCategories => Boolean(item))
+  const partialMinimums = plans.length === ETSY_ORIGINAL_SHOT_COUNT ? [4, 3, 3, 3, 4] : [3, 3, 3, 3, 4]
+  const minimums: Array<[EtsyPhotographyCategory, number, string]> = [
+    ['angleFamily', plans.length === ETSY_SHOT_COUNT ? 5 : partialMinimums[0], '角度类型'],
+    ['shotScale', plans.length === ETSY_SHOT_COUNT ? 4 : partialMinimums[1], '景别'],
+    ['lensClass', plans.length === ETSY_SHOT_COUNT ? 4 : partialMinimums[2], '镜头/焦段'],
+    ['lightingFamily', plans.length === ETSY_SHOT_COUNT ? 4 : partialMinimums[3], '布光类型'],
+    ['sceneFamily', plans.length === ETSY_SHOT_COUNT ? 5 : partialMinimums[4], '场景类型'],
   ]
   const failures = minimums.flatMap(([field, minimum, label]) => {
     const uniqueCount = new Set(decisions.map((decision) => normalizeDiversityKey(decision[field]))).size
@@ -925,33 +994,32 @@ function assertEtsyPhotographyDiversity(plans: AmazonImagePlan[]): void {
     for (let compareIndex = index + 1; compareIndex < decisions.length; compareIndex += 1) {
       const other = decisions[compareIndex]
       const repeatedCore = ['angleFamily', 'shotScale', 'lightingFamily', 'sceneFamily']
-        .filter((field) => normalizeDiversityKey(current[field as keyof EtsyShotPhotographyDecision]) === normalizeDiversityKey(other[field as keyof EtsyShotPhotographyDecision]))
+        .filter((field) => normalizeDiversityKey(current[field as EtsyPhotographyCategory]) === normalizeDiversityKey(other[field as EtsyPhotographyCategory]))
       if (repeatedCore.length >= 4) failures.push(`${plans[index]?.slot} 与 ${plans[compareIndex]?.slot} 的角度、景别、布光和场景完全重复`)
     }
   }
 
   if (failures.length) {
-    throw new Error(`Etsy 摄影自动判断未通过 15 镜头差异检查：${failures.slice(0, 5).join('；')}`)
+    throw new Error(`Etsy 摄影自动判断未通过 ${plans.length} 镜头差异检查：${failures.slice(0, 5).join('；')}`)
   }
 }
 
-function normalizeEtsyPlannerApiPayload(payload: PlannerApiPayload, marketplaceId: AmazonMarketplaceId, fallbackTitle = ''): PlannerApiResult {
+function normalizeEtsyPlannerApiPayload(payload: PlannerApiPayload, marketplaceId: AmazonMarketplaceId, fallbackTitle = '', slots = getEtsyImageSlots()): PlannerApiResult {
   const parsed = normalizeParsedListing(payload, fallbackTitle)
-  const slots = getEtsyImageSlots()
-  const plans = Array.isArray(payload.imagePlans)
-    ? payload.imagePlans
-        .map((plan, index) => {
-          const normalizedPlan = normalizePlan(plan, index, slots)
-          return applyEtsyAdditionalShotBrief({
-            ...normalizedPlan,
-            photographyDecision: normalizeEtsyPhotographyDecision(normalizedPlan),
-          }, index)
-        })
-        .filter((plan) => plan.prompt.trim() && plan.planMarkdown.trim())
-        .slice(0, ETSY_SHOT_COUNT)
-    : []
-
-  if (plans.length !== ETSY_SHOT_COUNT) throw new Error(`Etsy 策划结果不是 ${ETSY_SHOT_COUNT} 张图`)
+  const rawPlans = Array.isArray(payload.imagePlans) ? payload.imagePlans : []
+  if (rawPlans.length !== slots.length) throw new Error(`Etsy 策划结果不是 ${slots.length} 张图`)
+  const allSlots = getEtsyImageSlots()
+  const plans = slots.map((slot) => {
+    const matching = rawPlans.filter((plan) => plan?.slot === slot)
+    if (matching.length !== 1) throw new Error(`Etsy 策划结果缺少或重复镜头 ${slot}`)
+    const index = allSlots.indexOf(slot)
+    const normalizedPlan = normalizePlan(matching[0]!, index, allSlots)
+    if (!normalizedPlan.prompt.trim() || !normalizedPlan.planMarkdown.trim()) throw new Error(`Etsy 镜头 ${slot} 缺少提示词或策划说明`)
+    return applyEtsyAdditionalShotBrief({
+      ...normalizedPlan,
+      photographyDecision: normalizeEtsyPhotographyDecision(normalizedPlan),
+    }, index)
+  })
   assertEtsyPhotographyDiversity(plans)
 
   const etsyVisualDna = normalizeEtsyVisualDna(payload, parsed)
@@ -1066,33 +1134,55 @@ function buildListingPlannerInstructions(baseDraft: AmazonPromptDraft, listingIm
   ].filter(Boolean).join('\n')
 }
 
-function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft) {
+function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft, stage?: { outline?: boolean; slots?: string[]; partial?: boolean; lockedCampaign?: boolean }) {
   const slots = getEtsyImageSlots()
+  const requestedSlots = stage?.slots ?? slots
+  const isPartial = Boolean(stage?.partial)
+  const isAdditionalGroup = isPartial && requestedSlots.every((slot) => Number(slot.slice(1)) > ETSY_ORIGINAL_SHOT_COUNT)
+  const additionalBriefs = ETSY_ADDITIONAL_SHOT_BRIEFS.filter((brief) => requestedSlots.includes(brief.slot))
   return [
     "You are a 'World-Class Adaptive Art Director and AI Photographer' specifically tailored for Etsy sellers.",
     'Your mission is to curate a bespoke, commercially viable product photoshoot that elevates the seller brand while preserving the real product exactly.',
     'PHASE 1 — DEEP DIVE ANALYSIS & STRATEGIC PLANNING ONLY. Do not generate images in this response.',
-    'PART A: VISUAL DNA ANALYSIS. Analyze and return all four required fields: Product Name/Type; Material & Texture Focus; Color Palette & Lighting Mood; Brand Aesthetic & Target Audience.',
+    stage?.slots && !isPartial
+      ? 'PART A: Use the supplied locked Visual DNA; do not reanalyze, change, or repeat the campaign-level fields.'
+      : stage?.lockedCampaign
+        ? 'PART A: Use the supplied locked Visual DNA without changing the product identity. Repeat the four fields unchanged in this group’s JSON response.'
+      : 'PART A: VISUAL DNA ANALYSIS. Analyze and return all four required fields: Product Name/Type; Material & Texture Focus; Color Palette & Lighting Mood; Brand Aesthetic & Target Audience.',
     'Visual DNA Lock is crucial: derive physical facts from the product description, user-provided facts, and reference images. Never invent or redesign material, color, texture, finish, silhouette, dimensions, construction, accessories, logo, text, or quantity.',
-    'PART B: PRODUCT-SPECIFIC PHOTOGRAPHY DIAGNOSIS. Before designing any shot, return photographyAnalysis covering material light behavior, form and scale, critical details, verified function and interaction, capture challenges, and the campaign strategy. This diagnosis must explain what this particular product needs photographically; avoid generic luxury language.',
-    `PART C: THE DYNAMIC ${ETSY_SHOT_COUNT}-SHOT BESPOKE PLAN. Return exactly ${ETSY_SHOT_COUNT} shots in this slot order: ${slots.join(', ')}.`,
+    stage?.slots && !isPartial
+      ? 'PART B: PRODUCT-SPECIFIC PHOTOGRAPHY DIAGNOSIS. Apply the supplied locked material, form, detail, function, capture challenges, and campaign strategy to these shots.'
+      : stage?.lockedCampaign
+        ? 'PART B: Apply the supplied locked product photography diagnosis to these shots. Repeat the six analysis fields unchanged in this group’s JSON response.'
+      : 'PART B: PRODUCT-SPECIFIC PHOTOGRAPHY DIAGNOSIS. Before designing any shot, return photographyAnalysis covering material light behavior, form and scale, critical details, verified function and interaction, capture challenges, and the campaign strategy. This diagnosis must explain what this particular product needs photographically; avoid generic luxury language.',
+    stage?.outline
+      ? `PART C: Plan the complete ${ETSY_SHOT_COUNT}-shot campaign as a compact shotOutline in this order: ${slots.join(', ')}. For each shot return its slot, Chinese label, a one-sentence product-specific concept, and the five photography category IDs. Do not write prompts or detailed camera settings yet; a later request expands each shot without losing quality.`
+      : stage?.slots
+        ? isPartial
+          ? `PART C: Generate only these ${stage.slots.length} assigned shots: ${stage.slots.join(', ')}. Return exactly these imagePlans in this order. This is one half of a two-request Etsy campaign; do not add any other slots and do not use a generic fixed template.`
+          : `PART C: Expand only these ${stage.slots.length} assigned shots: ${stage.slots.join(', ')}. Return only imagePlans for these slots. Preserve their exact concepts and all five assigned category IDs from the full campaign outline; the other shots are produced separately.`
+        : `PART C: THE DYNAMIC ${ETSY_SHOT_COUNT}-SHOT BESPOKE PLAN. Return exactly ${ETSY_SHOT_COUNT} shots in this slot order: ${slots.join(', ')}.`,
     'Never use a reusable fixed scene template. Dynamically design every scene from this product’s Visual DNA, use case, craftsmanship, price positioning, gifting context, and likely Etsy buyer.',
-    `Preserve the original ${ETSY_ORIGINAL_SHOT_COUNT}-shot behavior for E01-E10: they must remain a strategic mix of hero/clean listing, macro/detail, lifestyle/in-situ, and atmospheric/creative images, with their exact order and concepts uniquely chosen for this product. Do not replace or compress these original ten shots.`,
-    'Append these five additional conversion shots after the original ten, in this exact order:',
-    ...ETSY_ADDITIONAL_SHOT_BRIEFS.map((brief) => `${brief.slot} — ${brief.label}: ${brief.promptRequirement}`),
-    'For every E01-E15 item, imagePlans.prompt must contain only the product-specific scene concept, verified product attributes, and truthful use or selling context. Keep all camera, lens, exposure, focus, lighting, scene-category, and differentiation decisions inside photographyDecision so the application can assemble a clean production prompt.',
-    'For each imagePlans item, label the shot strategy clearly and write planMarkdown as: **[Shot Strategy]:** followed by a specific, creative scene description tailored exactly to this product.',
-    'Every imagePlans.prompt must explicitly repeat the locked physical attributes—material, real color, texture, finish, silhouette, proportions, construction, and included details—so the image model cannot redesign the product.',
-    'For every shot, return a complete photographyDecision chosen from the product diagnosis: product suitability, angle family and exact viewpoint, shot scale and framing, top-tier real camera system, lens class and category-appropriate premium lens, aperture/shutter/ISO/support, focus strategy, lighting family and execution, scene family and execution, and an explicit difference from the other fourteen shots.',
+    !isAdditionalGroup ? `Preserve the original ${ETSY_ORIGINAL_SHOT_COUNT}-shot behavior for E01-E10: they must remain a strategic mix of hero/clean listing, macro/detail, lifestyle/in-situ, and atmospheric/creative images, with their exact order and concepts uniquely chosen for this product. Do not replace or compress these original ten shots.` : '',
+    !isPartial ? 'Append these five additional conversion shots after the original ten, in this exact order:' : '',
+    ...(isPartial ? additionalBriefs.map((brief) => `${brief.slot} — ${brief.label}: ${brief.promptRequirement}`) : ETSY_ADDITIONAL_SHOT_BRIEFS.map((brief) => `${brief.slot} — ${brief.label}: ${brief.promptRequirement}`)),
+    ...stage?.outline ? [] : [
+      'For every requested item, imagePlans.prompt must contain only the product-specific scene concept, verified product attributes, and truthful use or selling context. Keep all camera, lens, exposure, focus, lighting, scene-category, and differentiation decisions inside photographyDecision so the application can assemble a clean production prompt.',
+      'For each imagePlans item, label the shot strategy clearly and write planMarkdown as: **[Shot Strategy]:** followed by a specific, creative scene description tailored exactly to this product.',
+      'Every imagePlans.prompt must explicitly repeat the locked physical attributes—material, real color, texture, finish, silhouette, proportions, construction, and included details—so the image model cannot redesign the product.',
+      `For every requested shot, return a complete photographyDecision chosen from the product diagnosis: product suitability, angle family and exact viewpoint, shot scale and framing, top-tier real camera system, lens class and category-appropriate premium lens, aperture/shutter/ISO/support, focus strategy, lighting family and execution, scene family and execution, and an explicit difference from the other ${isPartial ? 'requested' : 'fourteen'} shots.`,
+    ],
     'Choose equipment because it solves the shot: examples may include Phase One IQ4 for technical detail, Hasselblad X2D for controlled product or lifestyle work, high-end macro optics for craftsmanship, tilt-shift optics for strict geometry, or a flagship fast camera for real motion. Do not force one camera, one 100mm lens, or one aperture across the campaign.',
-    'DIVERSITY MATRIX (mandatory): across E01-E15 use at least 5 angleFamily values, 4 shotScale values, 4 materially different lenses or focal lengths, 4 lightingFamily values, and 5 sceneFamily values. No two shots may share the same angleFamily + shotScale + lightingFamily + sceneFamily combination.',
+    isPartial
+      ? `DIVERSITY MATRIX (mandatory for this request): across these ${requestedSlots.length} shots, use at least ${requestedSlots.length === ETSY_ORIGINAL_SHOT_COUNT ? 4 : 3} angleFamily values, 3 shotScale values, 3 lensClass values, 3 lightingFamily values, and 4 sceneFamily values. No two requested shots may share the same angleFamily + shotScale + lightingFamily + sceneFamily combination. When an existing campaign context is supplied, also avoid duplicating those existing shots.`
+      : 'DIVERSITY MATRIX (mandatory): across E01-E15 use at least 5 angleFamily values, 4 shotScale values, 4 materially different lenses or focal lengths, 4 lightingFamily values, and 5 sceneFamily values. No two shots may share the same angleFamily + shotScale + lightingFamily + sceneFamily combination.',
     'Use diverse views only when they reveal something useful about this product. Build a deliberate rhythm across front/orthographic, three-quarter, side/rear, top-down, low/high, macro, functional POV, and environmental views as appropriate; never rotate the product arbitrarily just to satisfy variety.',
     'Each scene must differ in actual spatial logic, buyer context, and selling job. Renaming the same tabletop, background, or three-quarter composition does not count as diversity.',
     'Material-aware lighting is mandatory: select diffusion, raking light, cross-polarization, black flags, transmitted backlight, edge separation, practical ambience, or daylight shaping according to the verified surface behavior. Preserve true color and physically plausible reflections.',
     'Dimensions rule: E12 may display only measurements explicitly verified in the supplied facts. If dimensions are absent, use a truthful universal scale cue without any number and state in planMarkdown that the seller must confirm numeric dimensions.',
     'Prompts and negative prompts must be in English. planMarkdown and UI labels should be concise Simplified Chinese.',
     'Keep scenes commercially useful for Etsy. Avoid marketplace badges, fake reviews, prices, coupons, sale stickers, watermarks, QR codes, and unsupported claims.',
-    'Return one seriesStyleGuide in English that reinforces only product consistency and a cohesive bespoke campaign derived from the Visual DNA.',
+    stage?.slots && !isPartial ? '' : 'Return one seriesStyleGuide in English that reinforces only product consistency and a cohesive bespoke campaign derived from the Visual DNA.',
     'Do not ask follow-up questions inside the JSON and do not output prose outside the JSON. The application will display the Phase 1 confirmation message after the plan.',
     baseDraft.category ? `Known category: ${baseDraft.category}` : '',
   ].filter(Boolean).join('\n')
@@ -1146,13 +1236,13 @@ function buildPlannerInstructions(
   baseDraft: AmazonPromptDraft,
   mode: AmazonPlannerMode,
   aPlusType: APlusContentType,
-  options: { textOnlyReferenceGuard?: boolean; listingImageCount?: number; aPlusModuleSpecs?: AmazonAPlusModuleSpec[]; marketplaceId?: AmazonMarketplaceId } = {},
+  options: { textOnlyReferenceGuard?: boolean; listingImageCount?: number; aPlusModuleSpecs?: AmazonAPlusModuleSpec[]; marketplaceId?: AmazonMarketplaceId; etsySlots?: string[]; etsyPartial?: boolean; etsyLockedCampaign?: boolean } = {},
 ) {
   const listingImageCount = normalizeListingImageCount(options.listingImageCount)
   const aPlusModuleSpecs = normalizeAPlusModuleSpecs(aPlusType, options.aPlusModuleSpecs)
   return [
     mode === 'etsy'
-      ? buildEtsyPlannerInstructions(baseDraft)
+      ? buildEtsyPlannerInstructions(baseDraft, options.etsySlots ? { slots: options.etsySlots, partial: options.etsyPartial, lockedCampaign: options.etsyLockedCampaign } : undefined)
       : mode === 'aplus'
         ? buildAPlusPlannerInstructions(baseDraft, aPlusType, aPlusModuleSpecs, options.marketplaceId)
         : buildListingPlannerInstructions(baseDraft, listingImageCount, options.marketplaceId),
@@ -1253,19 +1343,47 @@ function buildEtsyListingRepairInput(previousOutput: string, errorMessage: strin
   ].join('\n')
 }
 
-function buildEtsyPlannerRepairInput(previousOutput: string, errorMessage: string) {
+function buildEtsyPlannerRepairInput(
+  previousOutput: string,
+  errorMessage: string,
+  slots = getEtsyImageSlots(),
+  campaignContext?: EtsyPlannerCampaignContext,
+) {
   return [
-    'Repair the previous Etsy 15-shot planning JSON so it passes every required schema and photography diversity check.',
+    `Repair the previous Etsy ${slots.length}-shot planning JSON so it passes the required schema and photography diversity check.`,
     `Validation error: ${errorMessage}`,
     'For angleFamily, shotScale, lensClass, lightingFamily, and sceneFamily, use only the exact lowercase machine-readable IDs listed in the system schema guide. Never translate, capitalize, or invent those values.',
-    'Preserve the product facts, Visual DNA, photography analysis, series style guide, and every valid unaffected shot exactly.',
+    campaignContext
+      ? 'The existing campaign context below is locked. Change only conflicting or invalid imagePlans items from this request; preserve every existing shot in that context exactly and keep Visual DNA and photography analysis unchanged. After combining both groups, the complete fifteen-shot campaign must have at least 5 angleFamily values, 4 shotScale values, 4 lensClass values, 4 lightingFamily values, and 5 sceneFamily values, with no duplicated angleFamily + shotScale + lightingFamily + sceneFamily combination.'
+      : 'Preserve the product facts, Visual DNA, photography analysis, series style guide, and every valid unaffected shot exactly.',
     'Change only the minimum conflicting or invalid imagePlans items. When a shot setup changes, keep its prompt, planMarkdown, photographyDecision, and negativePrompt coherent with the new angle, scale, lens, lighting, scene, and selling job.',
-    'The repaired campaign must still contain E01-E15 in the required order, meet every diversity minimum, and use no duplicate angleFamily + shotScale + lightingFamily + sceneFamily combination.',
+    `The repaired campaign must still contain exactly ${slots.join(', ')} in the required order, meet every diversity minimum for this request, and use no duplicate angleFamily + shotScale + lightingFamily + sceneFamily combination.`,
     'Do not add unsupported product facts. Return only the complete repaired JSON object.',
+    campaignContext ? `Locked existing campaign context: ${formatEtsyCampaignContext(campaignContext, slots)}` : '',
     '',
     'Previous response:',
     previousOutput,
   ].join('\n')
+}
+
+function formatEtsyCampaignContext(context: EtsyPlannerCampaignContext, excludedSlots: string[] = []): string {
+  const excluded = new Set(excludedSlots)
+  return `Locked Visual DNA and photography analysis from the existing campaign. Preserve them exactly and make the requested shots distinct: ${JSON.stringify({
+    visualDna: context.visualDna,
+    photographyAnalysis: context.photographyAnalysis,
+    existingShots: context.plans.filter((plan) => !excluded.has(plan.slot)).map((plan) => ({
+      slot: plan.slot,
+      label: plan.label,
+      planMarkdown: plan.planMarkdown.slice(0, 280),
+      angleFamily: plan.photographyDecision?.angleFamily,
+      angle: plan.photographyDecision?.angle,
+      shotScale: plan.photographyDecision?.shotScale,
+      lensClass: plan.photographyDecision?.lensClass,
+      lightingFamily: plan.photographyDecision?.lightingFamily,
+      sceneFamily: plan.photographyDecision?.sceneFamily,
+      scene: plan.photographyDecision?.scene,
+    })),
+  })}`
 }
 
 function buildEtsyListingInputText(
@@ -1289,7 +1407,7 @@ function buildPlannerInputText(
   listingText: string,
   mode: AmazonPlannerMode,
   aPlusType: APlusContentType,
-  options: { includeReferenceImageInstruction?: boolean; userProductFacts?: string; listingImageCount?: number; aPlusModuleSpecs?: AmazonAPlusModuleSpec[]; marketplaceId?: AmazonMarketplaceId } = {},
+  options: { includeReferenceImageInstruction?: boolean; userProductFacts?: string; listingImageCount?: number; aPlusModuleSpecs?: AmazonAPlusModuleSpec[]; marketplaceId?: AmazonMarketplaceId; etsySlots?: string[]; etsyCampaignContext?: EtsyPlannerCampaignContext } = {},
 ) {
   const referenceImageInstruction = options.includeReferenceImageInstruction
     ? 'If reference images are attached, use them to understand the actual product appearance and included items.'
@@ -1297,9 +1415,17 @@ function buildPlannerInputText(
   const userProductFacts = options.userProductFacts?.trim()
   const marketplace = getAmazonMarketplace(options.marketplaceId)
   if (mode === 'etsy') {
+    const slots = options.etsySlots ?? getEtsyImageSlots()
+    const campaignContext = options.etsyCampaignContext
     return [
-      `Analyze this Etsy product and produce its Visual DNA plus a dynamic ${ETSY_SHOT_COUNT}-shot bespoke photoshoot blueprint.`,
+      options.etsySlots
+        ? `Analyze this Etsy product and produce a bespoke photoshoot blueprint for exactly ${slots.length} shots: ${slots.join(', ')}.`
+        : `Analyze this Etsy product and produce its Visual DNA plus a dynamic ${ETSY_SHOT_COUNT}-shot bespoke photoshoot blueprint.`,
       'Treat the supplied product facts and reference images as authoritative. If a physical detail is uncertain, stay neutral rather than inventing it.',
+      campaignContext ? formatEtsyCampaignContext(campaignContext, slots) : '',
+      options.etsySlots?.every((slot) => Number(slot.slice(1)) > ETSY_ORIGINAL_SHOT_COUNT) && !campaignContext
+        ? 'No original E01-E10 plans exist in the current session. Generate these five conversion shots as a self-contained group, use the product description and references to infer consistent visual DNA, and do not claim that the original shots were reviewed.'
+        : '',
       referenceImageInstruction,
       userProductFacts,
       '',
@@ -1364,13 +1490,13 @@ function buildResponsesPlannerInput(text: string, referenceImageDataUrls: string
 function buildChatPlannerSchemaGuide(
   mode: AmazonPlannerMode,
   aPlusType: APlusContentType,
-  options: { listingImageCount?: number; aPlusModuleSpecs?: AmazonAPlusModuleSpec[]; marketplaceId?: AmazonMarketplaceId } = {},
+  options: { listingImageCount?: number; aPlusModuleSpecs?: AmazonAPlusModuleSpec[]; marketplaceId?: AmazonMarketplaceId; etsySlots?: string[] } = {},
 ) {
   const productFields = 'product { title, category, color, material, audience, packageIncludes }'
   const styleFields = 'seriesStyleGuide string'
   const marketplace = getAmazonMarketplace(options.marketplaceId)
   if (mode === 'etsy') {
-    const slots = getEtsyImageSlots()
+    const slots = options.etsySlots ?? getEtsyImageSlots()
     return [
       `Return JSON with: ${productFields}, sellingPoints string[], visualDna object, photographyAnalysis object, ${styleFields}, imagePlans array.`,
       'visualDna must include productNameType, materialTextureFocus, colorPaletteLightingMood, brandAestheticTargetAudience.',
@@ -1410,7 +1536,7 @@ function buildChatPlannerSystemPrompt(
   baseDraft: AmazonPromptDraft,
   mode: AmazonPlannerMode,
   aPlusType: APlusContentType,
-  options: { textOnlyReferenceGuard?: boolean; listingImageCount?: number; aPlusModuleSpecs?: AmazonAPlusModuleSpec[]; marketplaceId?: AmazonMarketplaceId } = {},
+  options: { textOnlyReferenceGuard?: boolean; listingImageCount?: number; aPlusModuleSpecs?: AmazonAPlusModuleSpec[]; marketplaceId?: AmazonMarketplaceId; etsySlots?: string[]; etsyPartial?: boolean; etsyLockedCampaign?: boolean } = {},
 ) {
   return [
     buildPlannerInstructions(baseDraft, mode, aPlusType, options),
@@ -1419,8 +1545,189 @@ function buildChatPlannerSystemPrompt(
       listingImageCount: normalizeListingImageCount(options.listingImageCount),
       aPlusModuleSpecs: options.aPlusModuleSpecs,
       marketplaceId: options.marketplaceId,
+      etsySlots: options.etsySlots,
     }),
   ].join('\n\n')
+}
+
+function isBananaProPlanner(profile: ApiProfile): boolean {
+  try {
+    return new URL(profile.baseUrl).hostname.toLowerCase() === 'api.bananapro.top'
+  } catch {
+    return false
+  }
+}
+
+function createEtsyOutlineSchema() {
+  const { imagePlans: _imagePlans, ...campaignProperties } = createEtsyPlannerSchema().properties
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      ...campaignProperties,
+      shotOutline: {
+        type: 'array',
+        minItems: ETSY_SHOT_COUNT,
+        maxItems: ETSY_SHOT_COUNT,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            slot: { type: 'string', enum: getEtsyImageSlots() },
+            label: CHINESE_LABEL_SCHEMA,
+            concept: { type: 'string', description: 'One specific English sentence describing this shot and its distinct buyer purpose.' },
+            ...ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS,
+          },
+          required: ['slot', 'label', 'concept', ...Object.keys(ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS)],
+        },
+      },
+    },
+    required: [...Object.keys(campaignProperties), 'shotOutline'],
+  }
+}
+
+function normalizeEtsyOutline(payload: PlannerApiPayload, fallbackTitle: string) {
+  const parsed = normalizeParsedListing(payload, fallbackTitle)
+  const visualDna = normalizeEtsyVisualDna(payload, parsed)
+  const photographyAnalysis = normalizeEtsyPhotographyAnalysis(payload, visualDna)
+  const rawOutline = payload.shotOutline
+  if (!Array.isArray(rawOutline) || rawOutline.length !== ETSY_SHOT_COUNT) {
+    throw new Error(`Etsy 总体策划必须包含 ${ETSY_SHOT_COUNT} 张镜头分配`)
+  }
+  const shotOutline: EtsyShotOutline[] = getEtsyImageSlots().map((slot) => {
+    const shot = rawOutline.find((item) => item?.slot === slot)
+    if (!shot || !normalizePlannerText(shot.concept) || !normalizePlannerText(shot.label)) {
+      throw new Error(`Etsy 总体策划缺少 ${slot} 的镜头概念`)
+    }
+    return { slot, label: normalizePlannerText(shot.label), concept: normalizePlannerText(shot.concept), ...normalizeEtsyPhotographyCategories(shot, slot) }
+  })
+  assertEtsyPhotographyDiversity(shotOutline.map((shot) => ({ slot: shot.slot, photographyDecision: shot })))
+  return { ...payload, visualDna, photographyAnalysis, shotOutline }
+}
+
+function normalizeEtsyShotBatch(payload: PlannerApiPayload, outline: EtsyShotOutline[]): AmazonImagePlan[] {
+  const rawPlans = payload.imagePlans
+  if (!Array.isArray(rawPlans) || rawPlans.length !== outline.length) {
+    throw new Error(`Etsy 分批策划必须包含且仅包含：${outline.map((shot) => shot.slot).join(', ')}`)
+  }
+  return outline.map((shot, index) => {
+    const rawPlan = rawPlans.find((plan) => plan?.slot === shot.slot)
+    if (!rawPlan || !normalizePlannerText(rawPlan.prompt) || !normalizePlannerText(rawPlan.planMarkdown)) {
+      throw new Error(`Etsy 镜头 ${shot.slot} 缺少完整提示词或策划说明`)
+    }
+    const plan = normalizePlan(rawPlan, index, outline.map((item) => item.slot))
+    const decision = normalizeEtsyPhotographyDecision(plan)
+    for (const field of Object.keys(ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS) as EtsyPhotographyCategory[]) {
+      if (decision[field] !== shot[field]) throw new Error(`Etsy 镜头 ${shot.slot} 的 ${field} 偏离已锁定的总体策划：应为 ${shot[field]}`)
+    }
+    return { ...plan, photographyDecision: decision }
+  })
+}
+
+async function callBatchedEtsyPlanner(options: {
+  baseDraft: AmazonPromptDraft
+  inputText: string
+  textOnlyReferenceGuard: boolean
+  marketplaceId: AmazonMarketplaceId
+  fallbackTitle: string
+  signal?: AbortSignal
+  onProgress?: (message: string) => void
+  request: (stage: EtsyPlannerRequestStage, signal: AbortSignal) => Promise<PlannerResponseTextResult>
+}): Promise<PlannerApiResult> {
+  const controller = new AbortController()
+  const abort = () => controller.abort(options.signal?.reason)
+  if (options.signal?.aborted) abort()
+  options.signal?.addEventListener('abort', abort, { once: true })
+
+  const runStage = async <T,>(stage: EtsyPlannerRequestStage, validate: (payload: PlannerApiPayload) => T): Promise<T> => {
+    let previousOutput = ''
+    let validationError = ''
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      controller.signal.throwIfAborted()
+      const stageController = new AbortController()
+      const stop = () => stageController.abort(controller.signal.reason)
+      controller.signal.addEventListener('abort', stop, { once: true })
+      let timedOut = false
+      const timer = setTimeout(() => { timedOut = true; stageController.abort() }, 180_000)
+      let result: PlannerResponseTextResult
+      try {
+        result = await options.request({
+          ...stage,
+          inputText: attempt === 0 ? stage.inputText : [
+            stage.inputText,
+            `Repair only this stage. Validation error: ${validationError}`,
+            'Keep all locked product facts and the assigned shot categories; return the complete JSON for this stage only.',
+            `Previous stage output: ${previousOutput}`,
+          ].join('\n\n'),
+        }, stageController.signal)
+      } catch (error) {
+        if (timedOut) throw new Error(`Etsy ${stage.name}等待超过 3 分钟，服务商上游仍未完成响应。`)
+        throw error
+      } finally {
+        clearTimeout(timer)
+        controller.signal.removeEventListener('abort', stop)
+        stageController.abort()
+      }
+      try {
+        return validate(parsePlannerPayload(result.text))
+      } catch (error) {
+        validationError = error instanceof Error ? error.message : String(error)
+        if (attempt === 1) throw new Error(`Etsy ${stage.name}自动纠错后仍未通过：${validationError}`)
+        previousOutput = result.text
+      }
+    }
+    throw new Error(validationError)
+  }
+
+  try {
+    options.onProgress?.('正在分析产品并统筹 15 张镜头')
+    const outline = await runStage({
+      name: '总体策划',
+      schema: createEtsyOutlineSchema(),
+      instructions: [buildEtsyPlannerInstructions(options.baseDraft, { outline: true }), options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : ''].filter(Boolean).join('\n'),
+      inputText: options.inputText,
+    }, (payload) => normalizeEtsyOutline(payload, options.fallbackTitle))
+    // Lock the full campaign before expanding small batches so parallel shots cannot converge on the same composition.
+    const batches = Array.from({ length: Math.ceil(ETSY_SHOT_COUNT / 3) }, (_, index) => outline.shotOutline.slice(index * 3, index * 3 + 3))
+    const results: AmazonImagePlan[][] = new Array(batches.length)
+    let nextBatch = 0
+    let completedShots = 0
+    options.onProgress?.(`正在细化摄影方案：0/${ETSY_SHOT_COUNT}`)
+    const workers = Array.from({ length: 2 }, async () => {
+      while (nextBatch < batches.length) {
+        controller.signal.throwIfAborted()
+        const index = nextBatch++
+        const batch = batches[index]!
+        const slots = batch.map((shot) => shot.slot)
+        const batchSchema = createEtsyPlannerSchema(slots)
+        results[index] = await runStage({
+          name: `镜头 ${slots.join('/')}`,
+          schema: { type: 'object', additionalProperties: false, properties: { imagePlans: batchSchema.properties.imagePlans }, required: ['imagePlans'] },
+          instructions: [buildEtsyPlannerInstructions(options.baseDraft, { slots }), options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : ''].filter(Boolean).join('\n'),
+          inputText: [
+            options.inputText,
+            `Locked campaign shared by all batches: ${JSON.stringify(outline)}`,
+            `Expand only ${slots.join(', ')}. Preserve every assigned category, the exact product identity, and the distinctions from all other shots. Give these shots complete production-quality prompts and all 15 photographyDecision fields; never abbreviate their photographic detail.`,
+          ].join('\n\n'),
+        }, (payload) => normalizeEtsyShotBatch(payload, batch))
+        completedShots += batch.length
+        options.onProgress?.(`正在细化摄影方案：${completedShots}/${ETSY_SHOT_COUNT}`)
+      }
+    })
+    try {
+      await Promise.all(workers)
+    } catch (error) {
+      controller.abort()
+      await Promise.allSettled(workers)
+      throw error
+    }
+    controller.signal.throwIfAborted()
+    options.onProgress?.('正在校验 15 张镜头的完整性与差异')
+    return normalizeEtsyPlannerApiPayload({ ...outline, imagePlans: results.flat() }, options.marketplaceId, options.fallbackTitle)
+  } finally {
+    options.signal?.removeEventListener('abort', abort)
+    controller.abort()
+  }
 }
 
 export async function callAmazonPlannerApi(options: {
@@ -1435,23 +1742,29 @@ export async function callAmazonPlannerApi(options: {
   aPlusType?: APlusContentType
   aPlusModuleSpecs?: Array<Partial<AmazonAPlusModuleSpec>>
   aPlusGenerationTier?: SizeTier
+  etsyShotGroup?: EtsyShotGroup
+  etsyCampaignContext?: EtsyPlannerCampaignContext
   signal?: AbortSignal
+  onProgress?: (message: string) => void
 }): Promise<PlannerApiResult> {
   const model = options.model?.trim() || options.profile.model.trim() || (options.profile.apiMode === 'chat' ? DEFAULT_CHAT_MODEL : DEFAULT_RESPONSES_MODEL)
   const mode = options.mode ?? 'listing'
+  const etsyShotGroup = mode === 'etsy' ? options.etsyShotGroup : undefined
+  const etsySlots = mode === 'etsy' ? getEtsyShotGroupSlots(etsyShotGroup) : getEtsyImageSlots()
   const marketplaceId = normalizeAmazonMarketplaceId(options.marketplaceId)
   const aPlusType = options.aPlusType ?? 'standard-large'
   const listingImageCount = normalizeListingImageCount(options.listingImageCount)
   const aPlusModuleSpecs = normalizeAPlusModuleSpecs(aPlusType, options.aPlusModuleSpecs)
   const aPlusGenerationTier = options.aPlusGenerationTier ?? '2K'
   const schema = mode === 'etsy'
-    ? createEtsyPlannerSchema()
+    ? createEtsyPlannerSchema(etsySlots)
     : mode === 'aplus'
       ? createAPlusPlannerSchema(aPlusModuleSpecs, marketplaceId)
       : createListingPlannerSchema(listingImageCount, marketplaceId)
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(options.profile.apiProxy, proxyConfig, options.profile.baseUrl)
   const useChatCompletions = options.profile.apiMode === 'chat'
+  const useStreaming = mode === 'etsy'
   const isDeepSeekPlannerProfile = isOfficialDeepSeekPlannerProfile(options.profile)
   const inputText = buildPlannerInputText(options.listingText, mode, aPlusType, {
     includeReferenceImageInstruction: !isDeepSeekPlannerProfile,
@@ -1459,13 +1772,15 @@ export async function callAmazonPlannerApi(options: {
     listingImageCount,
     aPlusModuleSpecs,
     marketplaceId,
+    etsySlots: etsyShotGroup ? etsySlots : undefined,
+    etsyCampaignContext: mode === 'etsy' ? options.etsyCampaignContext : undefined,
   })
   const referenceImageDataUrls = isDeepSeekPlannerProfile
     ? []
     : options.referenceImageDataUrls ?? []
   const request = async (repair?: { previousOutput: string; errorMessage: string }) => {
     const requestInputText = repair
-      ? buildEtsyPlannerRepairInput(repair.previousOutput, repair.errorMessage)
+      ? buildEtsyPlannerRepairInput(repair.previousOutput, repair.errorMessage, etsySlots, options.etsyCampaignContext)
       : inputText
     const requestReferenceImages = repair ? [] : referenceImageDataUrls
     return fetch(
@@ -1491,6 +1806,9 @@ export async function callAmazonPlannerApi(options: {
                     listingImageCount,
                     aPlusModuleSpecs,
                     marketplaceId,
+                    etsySlots: etsyShotGroup ? etsySlots : undefined,
+                    etsyPartial: Boolean(etsyShotGroup),
+                    etsyLockedCampaign: Boolean(options.etsyCampaignContext),
                   }),
                 },
                 {
@@ -1499,7 +1817,7 @@ export async function callAmazonPlannerApi(options: {
                 },
               ],
               response_format: { type: 'json_object' },
-              stream: false,
+              stream: useStreaming,
             }
           : {
               model,
@@ -1508,6 +1826,9 @@ export async function callAmazonPlannerApi(options: {
                 listingImageCount,
                 aPlusModuleSpecs,
                 marketplaceId,
+                etsySlots: etsyShotGroup ? etsySlots : undefined,
+                etsyPartial: Boolean(etsyShotGroup),
+                etsyLockedCampaign: Boolean(options.etsyCampaignContext),
               }),
               input: buildResponsesPlannerInput(requestInputText, requestReferenceImages),
               text: {
@@ -1518,7 +1839,7 @@ export async function callAmazonPlannerApi(options: {
                   schema,
                 },
               },
-              stream: false,
+              stream: useStreaming,
             },
         ),
       },
@@ -1531,11 +1852,21 @@ export async function callAmazonPlannerApi(options: {
     const message = await getApiErrorMessage(response)
     throw new Error(`HTTP ${response.status}: ${message}`)
   }
-  const responseResult = await readPlannerResponseText(response)
+  const responseResult = await readPlannerResponseText(response, useStreaming)
   const fallbackTitle = options.baseDraft.productTitle || inferTitleFromListingText(options.listingText)
   if (mode === 'etsy') {
+    const normalizeEtsyResult = (text: string): PlannerApiResult => {
+      const result = normalizeEtsyPlannerApiPayload(parsePlannerPayload(text), marketplaceId, fallbackTitle, etsySlots)
+      if (etsyShotGroup && options.etsyCampaignContext) {
+        const combined = mergeEtsyShotGroups(options.etsyCampaignContext.plans, result.plans)
+        if (combined.length === ETSY_SHOT_COUNT && combined.every((plan) => plan.photographyDecision)) {
+          assertEtsyPhotographyDiversity(combined)
+        }
+      }
+      return { ...result, ...(etsyShotGroup ? { etsyShotGroup } : {}) }
+    }
     try {
-      return normalizeEtsyPlannerApiPayload(parsePlannerPayload(responseResult.text), marketplaceId, fallbackTitle)
+      return normalizeEtsyResult(responseResult.text)
     } catch (error) {
       const validationMessage = error instanceof Error ? error.message : String(error)
       const repairResponse = await request({
@@ -1546,9 +1877,9 @@ export async function callAmazonPlannerApi(options: {
         const repairError = await getApiErrorMessage(repairResponse)
         throw new Error(`${validationMessage}\n\n自动纠错失败：HTTP ${repairResponse.status}: ${repairError}`)
       }
-      const repairedResult = await readPlannerResponseText(repairResponse)
+      const repairedResult = await readPlannerResponseText(repairResponse, useStreaming)
       try {
-        return normalizeEtsyPlannerApiPayload(parsePlannerPayload(repairedResult.text), marketplaceId, fallbackTitle)
+        return normalizeEtsyResult(repairedResult.text)
       } catch (repairValidationError) {
         const repairedMessage = repairValidationError instanceof Error ? repairValidationError.message : String(repairValidationError)
         throw new Error(`${validationMessage}\n\n自动纠错后仍未通过：${repairedMessage}`)

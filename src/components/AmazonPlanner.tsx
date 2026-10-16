@@ -11,6 +11,7 @@ import {
   buildAmazonPlanPrompt,
   buildEtsyPlanPrompt,
   DEFAULT_LISTING_IMAGE_COUNT,
+  ETSY_ORIGINAL_SHOT_COUNT,
   ETSY_SHOT_COUNT,
   formatAmazonListingSlotRange,
   formatAPlusModuleText,
@@ -38,7 +39,7 @@ import {
   type AmazonPlannerMode,
   type AmazonStyleDensityMode,
 } from '../lib/listingPlanner'
-import { callAmazonPlannerApi, callEtsyListingDetailsApi, formatEtsyListingDetailsMarkdown, type PlannerApiResult } from '../lib/listingPlannerApi'
+import { callAmazonPlannerApi, callEtsyListingDetailsApi, formatEtsyListingDetailsMarkdown, mergeEtsyShotGroups, type EtsyShotGroup, type PlannerApiResult } from '../lib/listingPlannerApi'
 import { deleteAmazonPlannerSession, getAllAmazonPlannerSessions, putAmazonPlannerSession } from '../lib/db'
 import {
   AMAZON_MARKETPLACES,
@@ -240,11 +241,28 @@ function getPlannerActionKey(mode: AmazonPlannerMode, planIndex: number | null, 
   return `${mode}:${planIndex}:${slot}`
 }
 
+function getEtsyCampaignInputKey(listingText: string, draft: AmazonPromptDraft, referenceImageIds: string[]) {
+  return JSON.stringify([
+    listingText.trim(),
+    referenceImageIds,
+    draft.productTitle,
+    draft.category,
+    draft.brand,
+    draft.color,
+    draft.material,
+    draft.audience,
+    draft.sellingPoints,
+    draft.packageIncludes,
+    draft.scene,
+    draft.forbidden,
+  ])
+}
+
 function toAmazonPlannerSessionMode(mode: AmazonPlannerMode): AmazonPlannerSession['mode'] {
   return mode
 }
 
-function getPlannerFailureDetail(err: unknown): string {
+function getPlannerFailureDetail(err: unknown, isEtsyImageMode = false): string {
   const rawMessage = err instanceof Error ? err.message : String(err)
   const message = rawMessage.trim() || '未知错误'
   const lower = message.toLowerCase()
@@ -267,6 +285,14 @@ function getPlannerFailureDetail(err: unknown): string {
   }
   if (/failed to fetch|network|cors|load failed|连接|网络|跨域/.test(lower)) {
     hints.push('浏览器未能连接到策划接口；请检查网络、跨域设置，或确认部署端 API 代理配置。')
+  }
+  if (/\b(?:524|504)\b/.test(lower)) {
+    hints.push('服务商网关等待上游模型超时；若持续出现，请让服务商检查渠道响应速度和流式转发是否被缓冲。')
+  }
+  if (/\b429\b|rate limit|too many requests|限流/.test(lower)) {
+    hints.push(isEtsyImageMode
+      ? '服务商上游正在限流。Etsy 策划已分成 10 张与 5 张两个独立请求；请间隔后重试失败的那一组，若仍持续出现，请联系服务商检查该模型的额度和渠道。'
+      : '服务商上游正在限流，请稍后重试；若持续出现，请联系服务商检查该模型的额度和渠道。')
   }
 
   return [message, ...hints].join('\n\n')
@@ -394,6 +420,7 @@ function getEtsyPlannerChecks(
   referenceImageCount: number,
   visualDna: EtsyVisualDna | null,
   hasStyleReference: boolean,
+  plannedShotCount: number,
 ): Array<{ label: string; status: ComplianceStatus; detail: string }> {
   return [
     {
@@ -404,12 +431,12 @@ function getEtsyPlannerChecks(
     {
       label: 'Visual DNA',
       status: visualDna ? 'ready' : 'warning',
-      detail: visualDna ? '材质、颜色、纹理与受众已锁定' : '点击 Etsy策划生成视觉DNA',
+      detail: visualDna ? '材质、颜色、纹理与受众已锁定' : '选择一组 Etsy 镜头生成 Visual DNA',
     },
     {
       label: '镜头规格',
       status: /^(2048|4096)x(2048|4096)$/.test(size) ? 'ready' : 'warning',
-      detail: `${ETSY_SHOT_COUNT} 张 · ${/4096x4096/.test(size) ? '4K' : '2K'} · 1:1`,
+      detail: `${plannedShotCount}/${ETSY_SHOT_COUNT} 张已策划 · ${/4096x4096/.test(size) ? '4K' : '2K'} · 1:1`,
     },
     {
       label: '产品参考图',
@@ -441,6 +468,7 @@ export default function AmazonPlanner() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const plannerAbortControllerRef = useRef<AbortController | null>(null)
+  const etsyCampaignInputKeyRef = useRef<string | null>(null)
   const etsyListingAbortControllerRef = useRef<AbortController | null>(null)
   const stylePresetAbortControllerRef = useRef<AbortController | null>(null)
   const [draft, setDraft] = useState<AmazonPromptDraft>(DEFAULT_AMAZON_PROMPT_DRAFT)
@@ -483,6 +511,7 @@ export default function AmazonPlanner() {
   const [currentPlannerSessionId, setCurrentPlannerSessionId] = useState<string | null>(null)
   const [showPlannerHistory, setShowPlannerHistory] = useState(false)
   const [isPlanning, setIsPlanning] = useState(false)
+  const [isGeneratingEtsyBatch, setIsGeneratingEtsyBatch] = useState(false)
   const [isGeneratingEtsyListing, setIsGeneratingEtsyListing] = useState(false)
   const [plannerError, setPlannerError] = useState('')
   const [etsyListingError, setEtsyListingError] = useState('')
@@ -614,6 +643,11 @@ export default function AmazonPlanner() {
   const currentActionProgress = currentActionKey ? actionProgress[currentActionKey] ?? null : null
   const currentActionFilled = currentActionProgress === 'filled' || currentActionProgress === 'submitted'
   const currentActionSubmitted = currentActionProgress === 'submitted'
+  const pendingEtsyPlanCount = plannerMode === 'etsy'
+    ? imagePlans.filter((plan, index) => actionProgress[getPlannerActionKey('etsy', index, plan.slot)] !== 'submitted').length
+    : 0
+  const etsyCampaignInputKey = getEtsyCampaignInputKey(listingText, draft, inputImages.map((image) => image.id))
+  const canContinueEtsyCampaign = etsyCampaignInputKeyRef.current === etsyCampaignInputKey
   const actionKindLabel = plannerMode === 'aplus' ? '模块' : plannerMode === 'etsy' ? '镜头' : isMainListingPlan ? '主图' : '图片'
   const actionGuidance = !hasSelectedPlan
     ? plannerMode === 'aplus' ? '先选择一个 A+ 模块' : '先选择一个图片位'
@@ -681,7 +715,7 @@ export default function AmazonPlanner() {
         ? {
             target: 'planner-action',
             message: plannerMode === 'etsy'
-              ? '下一步：点击 Etsy策划生成 Visual DNA 与15镜头方案（原10张 + 新增5张）'
+              ? '下一步：分开策划原有10张与新增5张；两部分会自动合并'
               : plannerMode === 'aplus' ? '下一步：点击 AI策划A+ 生成模块方案' : '下一步：点击 AI策划生成逐张方案',
           }
         : seriesStyleReferenceNeeded && !hasStyleReference
@@ -711,7 +745,7 @@ export default function AmazonPlanner() {
   const planListGuideActive = guideState.target === 'plan-list'
   const actionBarGuideActive = guideState.target === 'action-bar'
   const checks = plannerMode === 'etsy'
-    ? getEtsyPlannerChecks(draft, targetSize, inputImages.length, etsyVisualDna, hasStyleReference)
+    ? getEtsyPlannerChecks(draft, targetSize, inputImages.length, etsyVisualDna, hasStyleReference, imagePlans.length)
     : plannerMode === 'aplus'
       ? getAmazonAPlusComplianceChecks(draft, selectedAPlusPlan, aPlusType, marketplaceId, inputImages.length, hasStyleReference)
       : getAmazonListingPlannerChecks(draft, targetSize, marketplaceId, inputImages.length, hasStyleReference, styleReferenceRequired)
@@ -911,6 +945,71 @@ export default function AmazonPlanner() {
         if (submitted) markActionProgress(submittedActionKey, 'submitted')
       })
     })
+  }
+
+  const generatePendingEtsyPlans = async () => {
+    if (plannerMode !== 'etsy' || isGeneratingEtsyBatch || !imagePlans.length) return
+    if (!hasRequiredStyle || styleReferenceLimitExceeded) {
+      showToast('请先选择有效的 Etsy 风格参考配置', 'error')
+      return
+    }
+
+    const plansToGenerate = imagePlans.filter((plan, index) =>
+      actionProgress[getPlannerActionKey('etsy', index, plan.slot)] !== 'submitted',
+    )
+    if (!plansToGenerate.length) {
+      showToast('15 个 Etsy 镜头都已提交', 'info')
+      return
+    }
+
+    setParams({
+      size: targetSize,
+      quality: DEFAULT_PARAMS.quality,
+      output_format: DEFAULT_PARAMS.output_format,
+      output_compression: DEFAULT_PARAMS.output_compression,
+      n: 1,
+    })
+    setIsGeneratingEtsyBatch(true)
+    showToast(`开始并行生成 ${plansToGenerate.length} 个 Etsy 镜头（最多 3 路）`, 'info')
+
+    let nextIndex = 0
+    let submittedCount = 0
+    const worker = async () => {
+      while (nextIndex < plansToGenerate.length) {
+        const plan = plansToGenerate[nextIndex++]
+        const planIndex = imagePlans.findIndex((candidate) => candidate.slot === plan.slot)
+        if (planIndex < 0) continue
+
+        const submitted = await submitTask({
+          promptOverride: buildEtsyPlanPrompt({
+            ...plan,
+            seriesStyleGuide: seriesStyleGuides.etsy,
+            styleReferenceAttached: false,
+            styleDensityMode,
+            selectedVisualStyle: usesStyleDirectionForActivePlan ? selectedEtsyVisualStyle : null,
+          }),
+          taskCategoryOverride: {
+            productTitle: draft.productTitle.trim(),
+            workflow: 'etsy',
+            etsySlot: plan.slot,
+          },
+          preserveInputAfterSubmit: true,
+        })
+        if (submitted) {
+          submittedCount += 1
+          markActionProgress(getPlannerActionKey('etsy', planIndex, plan.slot), 'submitted')
+        }
+      }
+    }
+
+    try {
+      await Promise.all(Array.from({ length: Math.min(3, plansToGenerate.length) }, () => worker()))
+      showToast(`已提交 ${submittedCount} 个 Etsy 镜头，图片会并行生成`, submittedCount ? 'success' : 'error')
+    } catch (err) {
+      showToast(`Etsy 批量提交失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      setIsGeneratingEtsyBatch(false)
+    }
   }
 
   const copyPrompt = async () => {
@@ -1197,7 +1296,9 @@ export default function AmazonPlanner() {
   const applyPlannerResult = (result: PlannerApiResult, sourceLabel: string) => {
     const resultMarketplaceId = normalizeAmazonMarketplaceId(result.marketplaceId)
     const firstPlan = result.plans[0]
-    const nextDraft = {
+    const isEtsyMerge = result.mode === 'etsy' && Boolean(result.etsyShotGroup) && imagePlans.length > 0 && canContinueEtsyCampaign
+    const keepExistingEtsyIdentity = isEtsyMerge && Boolean(etsyVisualDna && etsyPhotographyAnalysis)
+    const nextDraft = keepExistingEtsyIdentity ? draft : {
       ...draft,
       ...result.parsed.inferred,
       productTitle: result.parsed.title || draft.productTitle,
@@ -1206,12 +1307,19 @@ export default function AmazonPlanner() {
     }
     const nextSeriesStyleGuides = {
       ...seriesStyleGuides,
-      [result.mode]: result.seriesStyleGuide,
+      [result.mode]: keepExistingEtsyIdentity ? seriesStyleGuides.etsy : result.seriesStyleGuide,
     }
-    const nextImagePlans = result.mode === 'aplus' ? [] : result.plans
+    const nextImagePlans = result.mode === 'aplus' ? [] : isEtsyMerge ? mergeEtsyShotGroups(imagePlans, result.plans) : result.plans
     const nextAPlusPlans = result.mode === 'aplus' ? withAPlusGenerationSizes(result.aPlusPlans, resolutionTier) : []
-    const nextSelectedPlanIndex = result.mode !== 'aplus' && result.plans.length ? 0 : null
+    const nextSelectedPlanIndex = result.mode !== 'aplus' && result.plans.length
+      ? Math.max(0, nextImagePlans.findIndex((plan) => plan.slot === firstPlan?.slot))
+      : null
     const nextSelectedAPlusPlanIndex = result.mode === 'aplus' && result.aPlusPlans.length ? 0 : null
+    const nextEtsyVisualDna = result.mode === 'etsy' ? keepExistingEtsyIdentity ? etsyVisualDna : result.etsyVisualDna ?? null : null
+    const nextEtsyPhotographyAnalysis = result.mode === 'etsy' ? keepExistingEtsyIdentity ? etsyPhotographyAnalysis : result.etsyPhotographyAnalysis ?? null : null
+    if (result.mode === 'etsy' && result.etsyShotGroup) {
+      etsyCampaignInputKeyRef.current = getEtsyCampaignInputKey(listingText, nextDraft, inputImages.map((image) => image.id))
+    }
 
     setDraft(nextDraft)
     setMarketplaceId(resultMarketplaceId)
@@ -1227,38 +1335,53 @@ export default function AmazonPlanner() {
       setSelectedAPlusPlanIndex(null)
     }
     setSeriesStyleGuides(nextSeriesStyleGuides)
-    setEtsyVisualDna(result.mode === 'etsy' ? result.etsyVisualDna ?? null : null)
-    setEtsyPhotographyAnalysis(result.mode === 'etsy' ? result.etsyPhotographyAnalysis ?? null : null)
-    setSelectedStylePresetId(DEFAULT_STYLE_PRESET_ID)
-    setSelectedStyleReference(null)
-    setStylePreview(null)
-    setStyleError('')
+    setEtsyVisualDna(nextEtsyVisualDna)
+    setEtsyPhotographyAnalysis(nextEtsyPhotographyAnalysis)
+    if (!isEtsyMerge) {
+      setSelectedStylePresetId(DEFAULT_STYLE_PRESET_ID)
+      setSelectedStyleReference(null)
+      setStylePreview(null)
+      setStyleError('')
+    }
     setPlannerError('')
-    setActionProgress({})
+    if (isEtsyMerge) {
+      const replacedSlots = new Set(result.plans.map((plan) => plan.slot))
+      setActionProgress((current) => Object.fromEntries(nextImagePlans.flatMap((plan, index) => {
+        if (replacedSlots.has(plan.slot)) return []
+        const previousIndex = imagePlans.findIndex((existing) => existing.slot === plan.slot)
+        if (previousIndex < 0) return []
+        const previousProgress = current[getPlannerActionKey('etsy', previousIndex, plan.slot)]
+        return previousProgress ? [[getPlannerActionKey('etsy', index, plan.slot), previousProgress]] : []
+      })))
+    } else {
+      setActionProgress({})
+    }
     void savePlannerSession({
-      id: createPlannerSessionId(),
+      id: isEtsyMerge ? currentPlannerSessionId ?? createPlannerSessionId() : createPlannerSessionId(),
       mode: toAmazonPlannerSessionMode(result.mode),
       marketplaceId: resultMarketplaceId,
       listingImageCount,
       aPlusModuleSpecs: getAPlusModuleSpecsForSession(aPlusModuleSpecsByType),
       draft: toSessionDraft(nextDraft),
       seriesStyleGuides: nextSeriesStyleGuides,
-      etsyVisualDna: result.mode === 'etsy' ? result.etsyVisualDna ?? null : null,
-      etsyPhotographyAnalysis: result.mode === 'etsy' ? result.etsyPhotographyAnalysis ?? null : null,
+      etsyVisualDna: nextEtsyVisualDna,
+      etsyPhotographyAnalysis: nextEtsyPhotographyAnalysis,
       styleCandidates: [],
       styleImages: [],
       selectedStyleIndex: null,
-      selectedStylePresetId: DEFAULT_STYLE_PRESET_ID,
-      selectedStyleReferenceImageId: null,
-      selectedCustomStyleReferenceId: null,
-      selectedCustomStyleReferenceSnapshot: null,
+      ...(!isEtsyMerge ? {
+        selectedStylePresetId: DEFAULT_STYLE_PRESET_ID,
+        selectedStyleReferenceImageId: null,
+        selectedCustomStyleReferenceId: null,
+        selectedCustomStyleReferenceSnapshot: null,
+      } : {}),
       styleDensityMode,
       imagePlans: nextImagePlans,
       aPlusPlans: nextAPlusPlans,
       selectedPlanIndex: nextSelectedPlanIndex,
       selectedAPlusPlanIndex: nextSelectedAPlusPlanIndex,
     })
-      .then((session) => selectStylePreset(DEFAULT_STYLE_PRESET_ID, { silent: true, persist: false })
+      .then((session) => isEtsyMerge ? null : selectStylePreset(DEFAULT_STYLE_PRESET_ID, { silent: true, persist: false })
         .then((reference) => {
           if (!reference) return
           const nextSession = {
@@ -1281,7 +1404,7 @@ export default function AmazonPlanner() {
     showToast(`${sourceLabel}已生成 ${result.mode === 'aplus' ? result.aPlusPlans.length : result.plans.length} 张图片策划`, 'success')
   }
 
-  const createAiPlan = async () => {
+  const createAiPlan = async (etsyShotGroup?: EtsyShotGroup) => {
     if (plannerAbortControllerRef.current) {
       showToast('AI 策划正在进行中', 'info')
       return
@@ -1324,13 +1447,19 @@ export default function AmazonPlanner() {
         aPlusType,
         aPlusModuleSpecs: aPlusSpecs,
         aPlusGenerationTier: resolutionTier,
+        etsyShotGroup: plannerMode === 'etsy' ? etsyShotGroup : undefined,
+        etsyCampaignContext: plannerMode === 'etsy' && etsyShotGroup && canContinueEtsyCampaign && imagePlans.length && etsyVisualDna && etsyPhotographyAnalysis
+          ? { visualDna: etsyVisualDna, photographyAnalysis: etsyPhotographyAnalysis, plans: imagePlans }
+          : undefined,
         signal: controller.signal,
       })
       if (controller.signal.aborted) return
-      applyPlannerResult(result, plannerMode === 'etsy' ? 'Etsy专属策划' : plannerMode === 'aplus' ? 'A+ AI 策划' : 'AI 策划')
+      applyPlannerResult(result, plannerMode === 'etsy'
+        ? etsyShotGroup === 'additional' ? 'Etsy新增5张策划' : etsyShotGroup === 'original' ? 'Etsy原10张策划' : 'Etsy专属策划'
+        : plannerMode === 'aplus' ? 'A+ AI 策划' : 'AI 策划')
     } catch (err) {
       if (controller.signal.aborted || isAbortError(err)) return
-      setPlannerError(getPlannerFailureDetail(err))
+      setPlannerError(getPlannerFailureDetail(err, plannerMode === 'etsy'))
       showToast('AI 策划失败，请查看详情', 'error')
     } finally {
       if (plannerAbortControllerRef.current === controller) {
@@ -1740,6 +1869,9 @@ export default function AmazonPlanner() {
     setEtsyListingError('')
     setStyleError(restoredStyleError)
     setCurrentPlannerSessionId(session.id)
+    etsyCampaignInputKeyRef.current = session.mode === 'etsy'
+      ? getEtsyCampaignInputKey(session.listingText, fromSessionDraft(session.draft), session.referenceImageIds)
+      : null
     setShowPlannerHistory(false)
     setActionProgress({})
     const restoredSession = {
@@ -2082,16 +2214,35 @@ export default function AmazonPlanner() {
                 </div>
               </div>
               <div className={`flex flex-wrap items-center gap-2 rounded-xl transition sm:justify-end ${getGuideFocusClass(guideState.target === 'planner-action')}`}>
-                {!isEtsyListingMode && (
+                {!isEtsyListingMode && (isEtsyImageMode ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void createAiPlan('original')}
+                      disabled={isPlanning || isGeneratingEtsyListing || Boolean(plannerProfileValidation)}
+                      className={`ios-button h-10 px-3 text-sm font-semibold ${isPlanning ? 'cursor-wait bg-gray-400 text-white' : isGeneratingEtsyListing || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-filled'} ${guideState.target === 'planner-action' ? 'ring-2 ring-[hsl(var(--primary)/0.25)] ring-offset-2 ring-offset-white dark:ring-offset-gray-950' : ''}`}
+                    >
+                      {isPlanning ? '策划中...' : `原有${ETSY_ORIGINAL_SHOT_COUNT}张`}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void createAiPlan('additional')}
+                      disabled={isPlanning || isGeneratingEtsyListing || Boolean(plannerProfileValidation)}
+                      className={`ios-button h-10 px-3 text-sm font-semibold ${isPlanning ? 'cursor-wait bg-gray-400 text-white' : isGeneratingEtsyListing || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-plain'}`}
+                    >
+                      {isPlanning ? '策划中...' : `新增${ETSY_SHOT_COUNT - ETSY_ORIGINAL_SHOT_COUNT}张`}
+                    </button>
+                  </>
+                ) : (
                   <button
                     type="button"
-                    onClick={createAiPlan}
+                    onClick={() => void createAiPlan()}
                     disabled={isPlanning || isGeneratingEtsyListing || Boolean(plannerProfileValidation)}
                     className={`ios-button h-10 px-4 text-sm font-semibold ${isPlanning ? 'cursor-wait bg-gray-400 text-white' : isGeneratingEtsyListing || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-filled'} ${guideState.target === 'planner-action' ? 'ring-2 ring-[hsl(var(--primary)/0.25)] ring-offset-2 ring-offset-white dark:ring-offset-gray-950' : ''}`}
                   >
-                    {isPlanning ? '策划中...' : isEtsyImageMode ? 'Etsy策划' : plannerMode === 'aplus' ? 'AI策划A+' : 'AI策划'}
+                    {isPlanning ? '策划中...' : plannerMode === 'aplus' ? 'AI策划A+' : 'AI策划'}
                   </button>
-                )}
+                ))}
                 {isEtsyListingMode && (
                   <button
                     type="button"
@@ -2143,8 +2294,8 @@ export default function AmazonPlanner() {
             <div className="mt-3 rounded-[var(--ios-radius-md)] bg-[hsl(var(--ios-blue-tint))] px-3 py-2 text-xs leading-relaxed text-[hsl(var(--primary))]">
               {isEtsyListingMode
                 ? '此页面只生成 Etsy Listing 文案，不生成图片。联网能力可用时会验证当前关键词与市场术语；不可用时会明确标注。'
-                : isEtsyImageMode
-                  ? 'Phase 1 使用策划配置生成 Visual DNA 与15镜头蓝图（原10张 + 新增5张）；Phase 2 点击提交生成时才调用生图配置。'
+                 : isEtsyImageMode
+                     ? '原有10张与新增5张可分别策划；两个请求成功后按 E01-E15 自动合并。Phase 2 点击提交生成时才调用生图配置。'
                   : 'AI策划使用设置中的策划配置，生图配置保持不变。'}
             </div>
             {plannerUsesOfficialDeepSeek && (
@@ -2592,6 +2743,17 @@ export default function AmazonPlanner() {
                   </div>
                 </div>
               </div>
+              {plannerMode === 'etsy' && (
+                <button
+                  type="button"
+                  onClick={() => void generatePendingEtsyPlans()}
+                  disabled={isGeneratingEtsyBatch || pendingEtsyPlanCount === 0 || submitDisabled}
+                  className={`mt-2 inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-semibold transition ${isGeneratingEtsyBatch || pendingEtsyPlanCount === 0 || submitDisabled ? 'cursor-not-allowed border-gray-100 bg-gray-100 text-gray-400 dark:border-white/[0.04] dark:bg-white/[0.04] dark:text-gray-600' : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-400/20 dark:bg-blue-400/10 dark:text-blue-200 dark:hover:bg-blue-400/20'}`}
+                >
+                  <PhotoIcon className="h-3.5 w-3.5" />
+                  {isGeneratingEtsyBatch ? '正在并行提交 Etsy 镜头...' : `批量生成未提交镜头（${pendingEtsyPlanCount}）`}
+                </button>
+              )}
               <div className={mobileActionDock ? 'h-16 sm:hidden' : 'h-[218px] sm:hidden'} aria-hidden="true" />
             </>
           )}
@@ -3056,8 +3218,8 @@ export default function AmazonPlanner() {
             <textarea
               value={plannerMode === 'aplus' && !selectedAPlusPlan
                 ? '请先点击 AI策划A+，再在右侧选择一个 A+ 模块。'
-                : plannerMode === 'etsy' && !selectedPlan
-                  ? '请先填写产品描述并点击 Etsy策划，AI 会生成 Visual DNA 与15镜头方案（原10张 + 新增5张）。'
+                 : plannerMode === 'etsy' && !selectedPlan
+                   ? '请先填写产品描述，再选择“原有10张”或“新增5张”进行 Etsy 策划。两部分成功后会自动合并为 E01-E15。'
                   : activePlanPreview || '请先粘贴 Listing 并点击 AI策划，LLM 会生成中文策划、英文 Prompt 和 Negative Prompt。'}
               className={`ios-field w-full resize-none p-3 font-mono text-xs leading-relaxed text-gray-700 dark:text-gray-200 ${hasSelectedPlan ? 'h-[430px]' : 'h-36 sm:h-44'}`}
               spellCheck={false}

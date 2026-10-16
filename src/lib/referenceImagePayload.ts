@@ -34,6 +34,8 @@ export interface PreparePlannerReferenceImagePayloadOptions {
   maxPayloadBytes?: number
   compressor?: PlannerReferenceImageCompressor
   maskCompressor?: PlannerReferenceImageMaskCompressor
+  /** Run independent reference-image encodes concurrently without changing their order. */
+  parallel?: boolean
 }
 
 const PRIMARY_MAX_EDGE = 1024
@@ -229,7 +231,17 @@ async function compressAll(
   request: PlannerReferenceImageCompressionRequest,
   compressor: PlannerReferenceImageCompressor,
   signal?: AbortSignal,
+  parallel = false,
 ): Promise<string[]> {
+  if (parallel) {
+    const result = await Promise.all(dataUrls.map(async (dataUrl) => {
+      throwIfAborted(signal)
+      return compressor(dataUrl, request, signal)
+    }))
+    throwIfAborted(signal)
+    return result
+  }
+
   const result: string[] = []
   for (const dataUrl of dataUrls) {
     throwIfAborted(signal)
@@ -246,6 +258,7 @@ async function compressAllWithOptionalMask(
   compressor: PlannerReferenceImageCompressor,
   maskCompressor: PlannerReferenceImageMaskCompressor,
   signal?: AbortSignal,
+  parallel = false,
 ): Promise<{ dataUrls: string[]; maskDataUrl?: string }> {
   const result: string[] = []
   let nextMaskDataUrl: string | undefined
@@ -260,9 +273,18 @@ async function compressAllWithOptionalMask(
     }
   }
 
-  for (let i = maskDataUrl ? 1 : 0; i < dataUrls.length; i++) {
-    throwIfAborted(signal)
-    result.push(await compressor(dataUrls[i], request, signal))
+  const firstUnmaskedIndex = maskDataUrl ? 1 : 0
+  if (parallel) {
+    const remaining = await Promise.all(dataUrls.slice(firstUnmaskedIndex).map(async (dataUrl) => {
+      throwIfAborted(signal)
+      return compressor(dataUrl, request, signal)
+    }))
+    result.push(...remaining)
+  } else {
+    for (let i = firstUnmaskedIndex; i < dataUrls.length; i++) {
+      throwIfAborted(signal)
+      result.push(await compressor(dataUrls[i], request, signal))
+    }
   }
   throwIfAborted(signal)
   return { dataUrls: result, maskDataUrl: nextMaskDataUrl }
@@ -298,6 +320,7 @@ export async function prepareReferenceImagePayload(
     { maxEdge: PRIMARY_MAX_EDGE, quality: PRIMARY_QUALITY },
     compressor,
     options.signal,
+    options.parallel,
   )
   const primaryBytes = sumDataUrlBytes(primaryDataUrls)
   if (primaryBytes <= maxPayloadBytes) {
@@ -316,6 +339,7 @@ export async function prepareReferenceImagePayload(
     { maxEdge: FALLBACK_MAX_EDGE, quality: FALLBACK_QUALITY },
     compressor,
     options.signal,
+    options.parallel,
   )
   const fallbackBytes = sumDataUrlBytes(fallbackDataUrls)
   if (fallbackBytes <= maxPayloadBytes) {
@@ -362,6 +386,7 @@ export async function prepareReferenceImageAndMaskPayload(
     compressor,
     maskCompressor,
     options.signal,
+    options.parallel,
   )
   const primaryBytes = sumPayloadBytes(primary.dataUrls, primary.maskDataUrl)
   if (primaryBytes <= maxPayloadBytes) {
@@ -383,6 +408,7 @@ export async function prepareReferenceImageAndMaskPayload(
     compressor,
     maskCompressor,
     options.signal,
+    options.parallel,
   )
   const fallbackBytes = sumPayloadBytes(fallback.dataUrls, fallback.maskDataUrl)
   if (fallbackBytes <= maxPayloadBytes) {
@@ -444,6 +470,7 @@ export async function prepareHighFidelityReferenceImageAndMaskPayload(
       compressor,
       maskCompressor,
       options.signal,
+      options.parallel,
     )
     const payloadBytes = sumPayloadBytes(prepared.dataUrls, prepared.maskDataUrl)
     lastPayloadBytes = payloadBytes

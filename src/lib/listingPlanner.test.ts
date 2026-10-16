@@ -28,7 +28,7 @@ import {
   isAmazonListingMainSlot,
   removeAPlusModuleSpecAt,
 } from './listingPlanner'
-import { callAmazonPlannerApi } from './listingPlannerApi'
+import { callAmazonPlannerApi, mergeEtsyShotGroups } from './listingPlannerApi'
 import type { EtsyShotPhotographyDecision } from '../types'
 
 const SAMPLE_LISTING = [
@@ -512,7 +512,153 @@ function createEtsyPayload() {
   }
 }
 
+function createPlannerStreamResponse(events: Record<string, unknown>[], contentType = 'text/event-stream') {
+  const data = new TextEncoder().encode([
+    ': keep-alive',
+    ...events.map((event) => `data: ${JSON.stringify(event)}`),
+    'data: [DONE]',
+    '',
+  ].join('\r\n\r\n'))
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let offset = 0; offset < data.length; offset += 97) {
+        controller.enqueue(data.slice(offset, offset + 97))
+      }
+      controller.close()
+    },
+  }), { headers: { 'Content-Type': contentType } })
+}
+
 describe('callAmazonPlannerApi', () => {
+  it('plans Etsy original ten and additional five separately without replacing the first group', async () => {
+    const fullPayload = createEtsyPayload()
+    const originalPayload = { ...fullPayload, imagePlans: fullPayload.imagePlans.slice(0, ETSY_ORIGINAL_SHOT_COUNT) }
+    const additionalPayload = { ...fullPayload, imagePlans: fullPayload.imagePlans.slice(ETSY_ORIGINAL_SHOT_COUNT) }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ output_text: JSON.stringify(originalPayload) }), { headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ output_text: JSON.stringify(additionalPayload) }), { headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const profile = createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' })
+    const common = {
+      listingText: 'Hand-thrown seafoam ceramic mug with speckled stoneware and a raw clay foot.',
+      baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
+      mode: 'etsy' as const,
+      profile,
+    }
+
+    const original = await callAmazonPlannerApi({ ...common, etsyShotGroup: 'original' })
+    const additional = await callAmazonPlannerApi({
+      ...common,
+      etsyShotGroup: 'additional',
+      etsyCampaignContext: {
+        visualDna: original.etsyVisualDna!,
+        photographyAnalysis: original.etsyPhotographyAnalysis!,
+        plans: original.plans,
+      },
+    })
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
+    expect(firstBody.stream).toBe(true)
+    expect(firstBody.text.format.schema.properties.imagePlans.minItems).toBe(10)
+    expect(firstBody.instructions).toContain('E01, E02, E03, E04, E05, E06, E07, E08, E09, E10')
+    expect(firstBody.instructions).not.toContain('E11 — 吸睛首页图')
+    expect(secondBody.stream).toBe(true)
+    expect(secondBody.text.format.schema.properties.imagePlans.minItems).toBe(5)
+    expect(secondBody.instructions).toContain('E11, E12, E13, E14, E15')
+    expect(secondBody.input[0].content[0].text).toContain('Locked Visual DNA and photography analysis')
+    expect(original.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(0, 10))
+    expect(additional.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(10))
+    const merged = mergeEtsyShotGroups(original.plans, additional.plans)
+    expect(merged.map((plan) => plan.slot)).toEqual(getEtsyImageSlots())
+    expect(merged.slice(0, 10).map((plan) => plan.prompt)).toEqual(original.plans.map((plan) => plan.prompt))
+    expect(merged[10]?.planMarkdown).toContain('新增固定镜头要求')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('requests only five Etsy slots through Chat Completions', async () => {
+    const fullPayload = createEtsyPayload()
+    const payload = { ...fullPayload, imagePlans: fullPayload.imagePlans.slice(ETSY_ORIGINAL_SHOT_COUNT) }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { role: 'assistant', content: JSON.stringify(payload) }, finish_reason: 'stop' }],
+    }), { headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug.',
+      baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy',
+      etsyShotGroup: 'additional',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'chat' }),
+    })
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+    expect(body.stream).toBe(true)
+    expect(body.messages[0].content).toContain('exactly 5 items in this order: E11, E12, E13, E14, E15')
+    expect(result.plans).toHaveLength(5)
+    expect(result.plans[0]?.slot).toBe('E11')
+  })
+
+  it('repairs only the requested Etsy group when combined campaign diversity fails', async () => {
+    const fullPayload = createEtsyPayload()
+    const originalPayload = { ...fullPayload, imagePlans: fullPayload.imagePlans.slice(0, ETSY_ORIGINAL_SHOT_COUNT) }
+    const invalidAdditionalPayload = {
+      ...fullPayload,
+      imagePlans: fullPayload.imagePlans.slice(ETSY_ORIGINAL_SHOT_COUNT).map((plan, index) => ({
+        ...plan,
+        photographyDecision: createPhotographyDecision(index),
+      })),
+    }
+    const additionalPayload = { ...fullPayload, imagePlans: fullPayload.imagePlans.slice(ETSY_ORIGINAL_SHOT_COUNT) }
+    const jsonResponse = (payload: unknown) => new Response(JSON.stringify({ output_text: JSON.stringify(payload) }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(originalPayload))
+      .mockResolvedValueOnce(jsonResponse(invalidAdditionalPayload))
+      .mockResolvedValueOnce(jsonResponse(additionalPayload))
+    vi.stubGlobal('fetch', fetchMock)
+    const common = {
+      listingText: 'Hand-thrown seafoam ceramic mug with speckled stoneware.',
+      baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
+      mode: 'etsy' as const,
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' as const }),
+    }
+    const original = await callAmazonPlannerApi({ ...common, etsyShotGroup: 'original' })
+
+    const additional = await callAmazonPlannerApi({
+      ...common,
+      etsyShotGroup: 'additional',
+      etsyCampaignContext: {
+        visualDna: original.etsyVisualDna!,
+        photographyAnalysis: original.etsyPhotographyAnalysis!,
+        plans: original.plans,
+      },
+    })
+    const repairBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(repairBody.input[0].content[0].text).toContain('Locked existing campaign context')
+    expect(repairBody.input[0].content[0].text).toContain('complete fifteen-shot campaign must have at least 5 angleFamily values')
+    expect(additional.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(ETSY_ORIGINAL_SHOT_COUNT))
+    expect(mergeEtsyShotGroups(original.plans, additional.plans)).toHaveLength(ETSY_SHOT_COUNT)
+  })
+
+  it('does not retry an Etsy upstream 429 automatically', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: 'upstream rate limit' } }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug.',
+      baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy',
+      etsyShotGroup: 'additional',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' as const }),
+    })).rejects.toThrow('HTTP 429')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('preserves the original Etsy ten-shot plan, appends five conversion shots, and carries adaptive photography decisions', async () => {
     const apiPayload = createEtsyPayload()
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({
@@ -538,6 +684,7 @@ describe('callAmazonPlannerApi', () => {
 
     const [, init] = fetchMock.mock.calls[0]!
     const body = JSON.parse(String(init?.body))
+    expect(body.stream).toBe(true)
     expect(body.text.format.name).toBe('etsy_bespoke_photoshoot_plan')
     expect(body.instructions).toContain("World-Class Adaptive Art Director and AI Photographer")
     expect(body.instructions).toContain('Visual DNA Lock is crucial')
@@ -622,6 +769,86 @@ describe('callAmazonPlannerApi', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it.each(['text/event-stream', 'application/json'])('streams Etsy Chat plans and preserves all text fragments with %s', async (contentType) => {
+    const apiPayload = createEtsyPayload()
+    const output = JSON.stringify(apiPayload)
+    const splitAt = output.indexOf(apiPayload.imagePlans[0]!.prompt) + 'Photograph the exact hand-thrown'.length
+    const fragments = [output.slice(0, splitAt), ' ', output.slice(splitAt + 1)]
+    const events = [
+      { choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: 'Do not include reasoning in the JSON.' } }] },
+      ...fragments.map((content) => ({ choices: [{ index: 0, delta: { content }, finish_reason: null }] })),
+      { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+      { choices: [], usage: { completion_tokens: 1000 } },
+    ]
+    const fetchMock = vi.fn().mockImplementation(async () => createPlannerStreamResponse(events, contentType))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug.',
+      baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy',
+      referenceImageDataUrls: ['data:image/png;base64,etsy-ref'],
+      profile: createDefaultOpenAIProfile({ apiKey: 'chat-key', apiMode: 'chat' }),
+      signal: controller.signal,
+    })
+
+    const init = fetchMock.mock.calls[0]?.[1]
+    const body = JSON.parse(String(init?.body))
+    expect(body.stream).toBe(true)
+    expect(body.response_format).toEqual({ type: 'json_object' })
+    expect(body.messages[1].content[1]).toEqual({ type: 'image_url', image_url: { url: 'data:image/png;base64,etsy-ref' } })
+    expect(init?.signal).toBe(controller.signal)
+    expect(result.plans).toHaveLength(ETSY_SHOT_COUNT)
+    expect(result.plans.map((plan) => plan.prompt)).toEqual(apiPayload.imagePlans.map((plan) => plan.prompt))
+    expect(result.plans.map((plan) => plan.photographyDecision)).toEqual(apiPayload.imagePlans.map((plan) => plan.photographyDecision))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads streamed Etsy Responses plans without duplicating delta and completed text', async () => {
+    const apiPayload = createEtsyPayload()
+    const output = JSON.stringify(apiPayload)
+    const events = [
+      { type: 'response.output_text.delta', delta: output.slice(0, 100) },
+      { type: 'response.output_text.delta', delta: output.slice(100) },
+      { type: 'response.output_text.done', text: output },
+      { type: 'response.completed', response: { status: 'completed', output_text: output } },
+    ]
+    const fetchMock = vi.fn().mockImplementation(async () => createPlannerStreamResponse(events))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug.',
+      baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy',
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses' }),
+    })
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).stream).toBe(true)
+    expect(result.plans).toHaveLength(ETSY_SHOT_COUNT)
+    expect(result.plans[0]?.prompt).toBe(apiPayload.imagePlans[0]?.prompt)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['chat connection closed early', (output: string) => [{ choices: [{ index: 0, delta: { content: output } }] }], '未收到完整完成标记'],
+    ['chat output limit', (output: string) => [{ choices: [{ index: 0, delta: { content: output }, finish_reason: 'length' }] }], '长度限制'],
+    ['responses connection closed early', (output: string) => [{ type: 'response.output_text.delta', delta: output }], '未收到完整完成标记'],
+    ['responses output limit', () => [{ type: 'response.incomplete', response: { status: 'incomplete' } }], '输出未完成'],
+    ['upstream stream failure', () => [{ error: { message: 'upstream stream disconnected' } }], 'upstream stream disconnected'],
+  ] as const)('rejects incomplete Etsy output without a repair request: %s', async (_label, createEvents, message) => {
+    const fetchMock = vi.fn().mockImplementation(async () => createPlannerStreamResponse(createEvents(JSON.stringify(createEtsyPayload()))))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug.',
+      baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy',
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'chat' }),
+    })).rejects.toThrow(message)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('automatically repairs an Etsy plan that fails the photography diversity check', async () => {
     const invalidPayload = createEtsyPayload()
     invalidPayload.imagePlans[12] = {
@@ -657,6 +884,7 @@ describe('callAmazonPlannerApi', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
     const repairBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
+    expect(repairBody.stream).toBe(true)
     expect(repairBody.input[0].content).toHaveLength(1)
     expect(repairBody.input[0].content[0].text).toContain('Repair the previous Etsy 15-shot planning JSON')
     expect(repairBody.input[0].content[0].text).toContain('Etsy 摄影自动判断未通过 15 镜头差异检查')
@@ -1021,6 +1249,7 @@ describe('callAmazonPlannerApi', () => {
       image_url: { url: 'data:image/png;base64,ref-chat' },
     })
     expect(body.response_format).toEqual({ type: 'json_object' })
+    expect(body.stream).toBe(false)
     expect(result.parsed.title).toBe('Chat planned tumbler')
     expect(result.marketplaceId).toBe('us')
     expect(result.plans).toHaveLength(7)
