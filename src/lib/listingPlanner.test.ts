@@ -29,6 +29,7 @@ import {
   removeAPlusModuleSpecAt,
 } from './listingPlanner'
 import { callAmazonPlannerApi } from './listingPlannerApi'
+import type { EtsyShotPhotographyDecision } from '../types'
 
 const SAMPLE_LISTING = [
   'Title: 40 oz Stainless Steel Insulated Tumbler with Handle and Straw Lid, Matte Black',
@@ -47,7 +48,7 @@ const TEST_LENS_CLASSES = ['ultra-wide', 'wide', 'normal', 'short-telephoto', 'm
 const TEST_LIGHTING_FAMILIES = ['soft-studio', 'raking-texture', 'cross-polarized', 'backlit-translucency', 'window-daylight', 'hard-directional', 'mixed-practical', 'edge-defined-low-key', 'high-key-shadowless'] as const
 const TEST_SCENE_FAMILIES = ['seamless-studio', 'editorial-still-life', 'material-macro', 'scale-infographic', 'craft-workbench', 'active-use', 'contextual-interior', 'architectural-environment', 'nature-outdoor', 'gift-or-keepsake'] as const
 
-function createPhotographyDecision(index = 0) {
+function createPhotographyDecision(index = 0): EtsyShotPhotographyDecision {
   return {
     productSuitability: `This capture reveals verified product evidence ${index + 1}.`,
     angleFamily: TEST_ANGLE_FAMILIES[index % TEST_ANGLE_FAMILIES.length],
@@ -582,6 +583,43 @@ describe('callAmazonPlannerApi', () => {
     expect(result.etsyVisualDna?.materialTextureFocus).toContain('Speckled stoneware')
     expect(result.etsyPhotographyAnalysis?.captureChallenges).toContain('glaze glare')
     expect(result.seriesStyleGuide).toContain('Product Name/Type: Hand-thrown ceramic mug')
+  })
+
+  it('normalizes a common translated lens class and gives Chat planners exact Etsy category IDs', async () => {
+    const apiPayload = createEtsyPayload()
+    apiPayload.imagePlans[0] = {
+      ...apiPayload.imagePlans[0]!,
+      photographyDecision: {
+        ...apiPayload.imagePlans[0]!.photographyDecision,
+        lensClass: '标准定焦',
+      },
+    }
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({
+      choices: [{ message: { role: 'assistant', content: JSON.stringify(apiPayload) }, finish_reason: 'stop' }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug.',
+      baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
+      mode: 'etsy',
+      profile: createDefaultOpenAIProfile({
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'chat-key',
+        apiMode: 'chat',
+        model: DEFAULT_CHAT_MODEL,
+      }),
+    })
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+    expect(body.messages[0].content).toContain(`lensClass MUST be exactly one of: ${TEST_LENS_CLASSES.join(', ')}.`)
+    expect(body.messages[0].content).toContain(`angleFamily MUST be exactly one of: ${TEST_ANGLE_FAMILIES.join(', ')}.`)
+    expect(body.messages[0].content).toContain('Never translate, capitalize, or invent their values')
+    expect(result.plans[0]?.photographyDecision?.lensClass).toBe('normal')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('automatically repairs an Etsy plan that fails the photography diversity check', async () => {

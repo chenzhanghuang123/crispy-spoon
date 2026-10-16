@@ -235,6 +235,19 @@ const ETSY_LENS_CLASSES = ['ultra-wide', 'wide', 'normal', 'short-telephoto', 'm
 const ETSY_LIGHTING_FAMILIES = ['soft-studio', 'raking-texture', 'cross-polarized', 'backlit-translucency', 'window-daylight', 'hard-directional', 'mixed-practical', 'edge-defined-low-key', 'high-key-shadowless', 'outdoor-natural'] as const
 const ETSY_SCENE_FAMILIES = ['seamless-studio', 'editorial-still-life', 'material-macro', 'scale-infographic', 'craft-workbench', 'active-use', 'contextual-interior', 'architectural-environment', 'nature-outdoor', 'gift-or-keepsake'] as const
 
+const ETSY_LENS_CLASS_ALIASES: Record<string, (typeof ETSY_LENS_CLASSES)[number]> = {
+  'normal-lens': 'normal',
+  'normal-prime': 'normal',
+  'normal-prime-lens': 'normal',
+  'standard-lens': 'normal',
+  'standard-prime': 'normal',
+  'standard-prime-lens': 'normal',
+  '标准定焦': 'normal',
+  '标准定焦镜头': 'normal',
+  '标准镜头': 'normal',
+  '标准焦段': 'normal',
+}
+
 const ETSY_PHOTOGRAPHY_DECISION_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -611,6 +624,26 @@ function normalizePlannerText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function normalizePhotographyCategoryKey(value: string): string {
+  return value
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[\s_/—–]+/g, '-')
+    .replace(/[^a-z0-9\u3400-\u9fff-]+/g, '')
+    .replace(/^-+|-+$/g, '')
+}
+
+function normalizePhotographyCategory(
+  value: string,
+  allowedValues: readonly string[],
+  aliases: Record<string, string> = {},
+): string {
+  const key = normalizePhotographyCategoryKey(value)
+  return allowedValues.find((allowedValue) => normalizePhotographyCategoryKey(allowedValue) === key)
+    ?? aliases[key]
+    ?? value
+}
+
 function limitTextAtWord(value: string, maxCharacters: number): string {
   const characters = Array.from(value.trim())
   if (characters.length <= maxCharacters) return characters.join('')
@@ -857,6 +890,11 @@ function normalizeEtsyPhotographyDecision(plan: AmazonImagePlan): EtsyShotPhotog
     ['sceneFamily', ETSY_SCENE_FAMILIES],
   ]
   for (const [field, allowedValues] of categoricalFields) {
+    decision[field] = normalizePhotographyCategory(
+      decision[field],
+      allowedValues,
+      field === 'lensClass' ? ETSY_LENS_CLASS_ALIASES : undefined,
+    )
     if (!allowedValues.includes(decision[field])) {
       throw new Error(`Etsy 镜头 ${plan.slot} 的 ${field} 不在摄影自动判断分类中：${decision[field]}`)
     }
@@ -1219,6 +1257,7 @@ function buildEtsyPlannerRepairInput(previousOutput: string, errorMessage: strin
   return [
     'Repair the previous Etsy 15-shot planning JSON so it passes every required schema and photography diversity check.',
     `Validation error: ${errorMessage}`,
+    'For angleFamily, shotScale, lensClass, lightingFamily, and sceneFamily, use only the exact lowercase machine-readable IDs listed in the system schema guide. Never translate, capitalize, or invent those values.',
     'Preserve the product facts, Visual DNA, photography analysis, series style guide, and every valid unaffected shot exactly.',
     'Change only the minimum conflicting or invalid imagePlans items. When a shot setup changes, keep its prompt, planMarkdown, photographyDecision, and negativePrompt coherent with the new angle, scale, lens, lighting, scene, and selling job.',
     'The repaired campaign must still contain E01-E15 in the required order, meet every diversity minimum, and use no duplicate angleFamily + shotScale + lightingFamily + sceneFamily combination.',
@@ -1339,6 +1378,12 @@ function buildChatPlannerSchemaGuide(
       `imagePlans must contain exactly ${slots.length} items in this order: ${slots.join(', ')}.`,
       'Each imagePlans item must include: slot, label, planMarkdown, prompt, negativePrompt, photographyDecision.',
       'Each photographyDecision must include productSuitability, angleFamily, angle, shotScale, framing, cameraSystem, lensClass, lens, exposure, focusStrategy, lightingFamily, lighting, sceneFamily, scene, differentiation.',
+      `angleFamily MUST be exactly one of: ${ETSY_ANGLE_FAMILIES.join(', ')}.`,
+      `shotScale MUST be exactly one of: ${ETSY_SHOT_SCALES.join(', ')}.`,
+      `lensClass MUST be exactly one of: ${ETSY_LENS_CLASSES.join(', ')}.`,
+      `lightingFamily MUST be exactly one of: ${ETSY_LIGHTING_FAMILIES.join(', ')}.`,
+      `sceneFamily MUST be exactly one of: ${ETSY_SCENE_FAMILIES.join(', ')}.`,
+      'These five category fields are lowercase machine-readable IDs. Never translate, capitalize, or invent their values; put human-readable details in the adjacent descriptive fields instead.',
       'Every prompt must explicitly repeat the locked product material, color, texture, finish, silhouette, proportions, and construction.',
     ].join('\n')
   }
