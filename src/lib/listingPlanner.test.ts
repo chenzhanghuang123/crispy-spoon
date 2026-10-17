@@ -561,13 +561,15 @@ describe('callAmazonPlannerApi', () => {
     })
     const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
     const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
-    expect(firstBody.stream).toBe(true)
+    expect(firstBody.stream).toBe(false)
     expect(firstBody.text.format.schema.properties.imagePlans.minItems).toBe(10)
+    expect(firstBody.text.format.schema.properties.imagePlans.maxItems).toBe(10)
     expect(firstBody.instructions).toContain('E01, E02, E03, E04, E05, E06, E07, E08, E09, E10')
     expect(firstBody.instructions).not.toContain('E11 — 吸睛首页图')
     expect(firstBody.instructions).not.toContain('ADDITIONAL FIVE — EXACT PRODUCT TWIN')
-    expect(secondBody.stream).toBe(true)
+    expect(secondBody.stream).toBe(false)
     expect(secondBody.text.format.schema.properties.imagePlans.minItems).toBe(5)
+    expect(secondBody.text.format.schema.properties.imagePlans.maxItems).toBe(5)
     expect(secondBody.instructions).toContain('E11, E12, E13, E14, E15')
     expect(secondBody.instructions).toContain('E12 — 形态与结构图')
     expect(secondBody.instructions).toContain('E13 — 真实使用场景图')
@@ -602,7 +604,7 @@ describe('callAmazonPlannerApi', () => {
       profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'chat' }),
     })
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
-    expect(body.stream).toBe(true)
+    expect(body.stream).toBe(false)
     expect(body.messages[0].content).toContain('exactly 5 items in this order: E11, E12, E13, E14, E15')
     expect(result.plans).toHaveLength(5)
     expect(result.plans[0]?.slot).toBe('E11')
@@ -695,7 +697,7 @@ describe('callAmazonPlannerApi', () => {
 
     const [, init] = fetchMock.mock.calls[0]!
     const body = JSON.parse(String(init?.body))
-    expect(body.stream).toBe(true)
+    expect(body.stream).toBe(false)
     expect(body.text.format.name).toBe('etsy_bespoke_photoshoot_plan')
     expect(body.instructions).toContain("World-Class Adaptive Art Director and AI Photographer")
     expect(body.instructions).toContain('Visual DNA Lock is crucial')
@@ -810,7 +812,7 @@ describe('callAmazonPlannerApi', () => {
 
     const init = fetchMock.mock.calls[0]?.[1]
     const body = JSON.parse(String(init?.body))
-    expect(body.stream).toBe(true)
+    expect(body.stream).toBe(false)
     expect(body.response_format).toEqual({ type: 'json_object' })
     expect(body.messages[1].content[1]).toEqual({ type: 'image_url', image_url: { url: 'data:image/png;base64,etsy-ref' } })
     expect(init?.signal).toBe(controller.signal)
@@ -839,7 +841,7 @@ describe('callAmazonPlannerApi', () => {
       profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses' }),
     })
 
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).stream).toBe(true)
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).stream).toBe(false)
     expect(result.plans).toHaveLength(ETSY_SHOT_COUNT)
     expect(result.plans[0]?.prompt).toBe(apiPayload.imagePlans[0]?.prompt)
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -899,7 +901,7 @@ describe('callAmazonPlannerApi', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
     const repairBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
-    expect(repairBody.stream).toBe(true)
+    expect(repairBody.stream).toBe(false)
     expect(repairBody.input[0].content).toHaveLength(1)
     expect(repairBody.input[0].content[0].text).toContain('Repair the previous Etsy 15-shot planning JSON')
     expect(repairBody.input[0].content[0].text).toContain('Etsy 摄影自动判断未通过 15 镜头差异检查')

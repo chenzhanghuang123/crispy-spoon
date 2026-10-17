@@ -1770,7 +1770,6 @@ export async function callAmazonPlannerApi(options: {
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(options.profile.apiProxy, proxyConfig, options.profile.baseUrl)
   const useChatCompletions = options.profile.apiMode === 'chat'
-  const useStreaming = mode === 'etsy'
   const isDeepSeekPlannerProfile = isOfficialDeepSeekPlannerProfile(options.profile)
   const inputText = buildPlannerInputText(options.listingText, mode, aPlusType, {
     includeReferenceImageInstruction: !isDeepSeekPlannerProfile,
@@ -1823,7 +1822,7 @@ export async function callAmazonPlannerApi(options: {
                 },
               ],
               response_format: { type: 'json_object' },
-              stream: useStreaming,
+              stream: false,
             }
           : {
               model,
@@ -1845,7 +1844,7 @@ export async function callAmazonPlannerApi(options: {
                   schema,
                 },
               },
-              stream: useStreaming,
+              stream: false,
             },
         ),
       },
@@ -1858,7 +1857,7 @@ export async function callAmazonPlannerApi(options: {
     const message = await getApiErrorMessage(response)
     throw new Error(`HTTP ${response.status}: ${message}`)
   }
-  const responseResult = await readPlannerResponseText(response, useStreaming)
+  const responseResult = await readPlannerResponseText(response, mode === 'etsy')
   const fallbackTitle = options.baseDraft.productTitle || inferTitleFromListingText(options.listingText)
   if (mode === 'etsy') {
     const normalizeEtsyResult = (text: string): PlannerApiResult => {
@@ -1883,7 +1882,7 @@ export async function callAmazonPlannerApi(options: {
         const repairError = await getApiErrorMessage(repairResponse)
         throw new Error(`${validationMessage}\n\n自动纠错失败：HTTP ${repairResponse.status}: ${repairError}`)
       }
-      const repairedResult = await readPlannerResponseText(repairResponse, useStreaming)
+      const repairedResult = await readPlannerResponseText(repairResponse, mode === 'etsy')
       try {
         return normalizeEtsyResult(repairedResult.text)
       } catch (repairValidationError) {
