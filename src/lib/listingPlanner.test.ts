@@ -242,6 +242,9 @@ describe('Amazon prompt builders', () => {
       expect(prompt).toContain(photographyDecision.lighting)
       expect(prompt).toContain(photographyDecision.scene)
       expect(prompt).toContain('Product Name/Type: Exact handmade product')
+      expect(prompt).toContain('SINGLE-PHOTOGRAPH DELIVERY')
+      expect(prompt).toContain('one independent square 1:1 photograph')
+      expect(prompt).toContain('original uploaded product references')
       expect(prompt).not.toContain('Campaign mood that should not be repeated')
       expect(prompt).not.toContain('100mm lens, f/2.8')
       expect(prompt).not.toContain('raytracing')
@@ -562,9 +565,17 @@ describe('callAmazonPlannerApi', () => {
     expect(firstBody.text.format.schema.properties.imagePlans.minItems).toBe(10)
     expect(firstBody.instructions).toContain('E01, E02, E03, E04, E05, E06, E07, E08, E09, E10')
     expect(firstBody.instructions).not.toContain('E11 — 吸睛首页图')
+    expect(firstBody.instructions).not.toContain('ADDITIONAL FIVE — EXACT PRODUCT TWIN')
     expect(secondBody.stream).toBe(true)
     expect(secondBody.text.format.schema.properties.imagePlans.minItems).toBe(5)
     expect(secondBody.instructions).toContain('E11, E12, E13, E14, E15')
+    expect(secondBody.instructions).toContain('E12 — 形态与结构图')
+    expect(secondBody.instructions).toContain('E13 — 真实使用场景图')
+    expect(secondBody.instructions).toContain('E14 — 材质与工艺特写')
+    expect(secondBody.instructions).toContain('E15 — 品牌氛围生活方式图')
+    expect(secondBody.instructions).toContain('ADDITIONAL FIVE — EXACT PRODUCT TWIN')
+    expect(secondBody.instructions).toContain('five separate square 1:1 photographs')
+    expect(secondBody.instructions).toContain('do not infer unseen backs, bottoms, interiors')
     expect(secondBody.input[0].content[0].text).toContain('Locked Visual DNA and photography analysis')
     expect(original.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(0, 10))
     expect(additional.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(10))
@@ -695,10 +706,11 @@ describe('callAmazonPlannerApi', () => {
     expect(body.instructions).toContain('Do not force one camera, one 100mm lens, or one aperture')
     expect(body.instructions).toContain('Preserve the original 10-shot behavior for E01-E10')
     expect(body.instructions).toContain('E11 — 吸睛首页图')
-    expect(body.instructions).toContain('E12 — 尺寸规格图')
-    expect(body.instructions).toContain('E13 — 匠心细节价值图')
-    expect(body.instructions).toContain('E14 — 买家代入场景图')
-    expect(body.instructions).toContain('E15 — 送礼决策收口图')
+    expect(body.instructions).toContain('E12 — 形态与结构图')
+    expect(body.instructions).toContain('E13 — 真实使用场景图')
+    expect(body.instructions).toContain('E14 — 材质与工艺特写')
+    expect(body.instructions).toContain('E15 — 品牌氛围生活方式图')
+    expect(body.instructions).toContain('ADDITIONAL FIVE — REAL PHOTOGRAPHY')
     expect(body.text.format.schema.properties.photographyAnalysis).toBeTruthy()
     expect(body.text.format.schema.properties.imagePlans.items.properties.photographyDecision).toBeTruthy()
     expect(body.input[0].content[0].text).toContain(`dynamic ${ETSY_SHOT_COUNT}-shot bespoke photoshoot blueprint`)
@@ -709,15 +721,18 @@ describe('callAmazonPlannerApi', () => {
     )
     expect(result.plans.slice(ETSY_ORIGINAL_SHOT_COUNT).map((plan) => [plan.slot, plan.label])).toEqual([
       ['E11', '吸睛首页图'],
-      ['E12', '尺寸规格图'],
-      ['E13', '匠心细节价值图'],
-      ['E14', '买家代入场景图'],
-      ['E15', '送礼决策收口图'],
+      ['E12', '形态与结构图'],
+      ['E13', '真实使用场景图'],
+      ['E14', '材质与工艺特写'],
+      ['E15', '品牌氛围生活方式图'],
     ])
     expect(result.plans[10]?.prompt).toBe(apiPayload.imagePlans[10]?.prompt)
     expect(result.plans[10]?.planMarkdown).toContain('新增固定镜头要求')
     expect(result.plans[10]?.photographyDecision?.angle).toBe(apiPayload.imagePlans[10]?.photographyDecision.angle)
-    expect(result.plans[11]?.negativePrompt).toContain('invented dimensions')
+    expect(result.plans[11]?.negativePrompt).toContain('invented rear or interior structure')
+    expect(result.plans[12]?.negativePrompt).toContain('unsupported function')
+    expect(result.plans[13]?.negativePrompt).toContain('fake texture')
+    expect(result.plans[14]?.negativePrompt).toContain('generic stock interior')
     const finalHeroPrompt = buildEtsyPlanPrompt({
       ...result.plans[10]!,
       seriesStyleGuide: result.seriesStyleGuide,

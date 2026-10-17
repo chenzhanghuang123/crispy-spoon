@@ -1139,6 +1139,7 @@ function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft, stage?: { ou
   const requestedSlots = stage?.slots ?? slots
   const isPartial = Boolean(stage?.partial)
   const isAdditionalGroup = isPartial && requestedSlots.every((slot) => Number(slot.slice(1)) > ETSY_ORIGINAL_SHOT_COUNT)
+  const includesAdditionalShots = !isPartial || isAdditionalGroup
   const additionalBriefs = ETSY_ADDITIONAL_SHOT_BRIEFS.filter((brief) => requestedSlots.includes(brief.slot))
   return [
     "You are a 'World-Class Adaptive Art Director and AI Photographer' specifically tailored for Etsy sellers.",
@@ -1164,8 +1165,14 @@ function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft, stage?: { ou
         : `PART C: THE DYNAMIC ${ETSY_SHOT_COUNT}-SHOT BESPOKE PLAN. Return exactly ${ETSY_SHOT_COUNT} shots in this slot order: ${slots.join(', ')}.`,
     'Never use a reusable fixed scene template. Dynamically design every scene from this product’s Visual DNA, use case, craftsmanship, price positioning, gifting context, and likely Etsy buyer.',
     !isAdditionalGroup ? `Preserve the original ${ETSY_ORIGINAL_SHOT_COUNT}-shot behavior for E01-E10: they must remain a strategic mix of hero/clean listing, macro/detail, lifestyle/in-situ, and atmospheric/creative images, with their exact order and concepts uniquely chosen for this product. Do not replace or compress these original ten shots.` : '',
-    !isPartial ? 'Append these five additional conversion shots after the original ten, in this exact order:' : '',
-    ...(isPartial ? additionalBriefs.map((brief) => `${brief.slot} — ${brief.label}: ${brief.promptRequirement}`) : ETSY_ADDITIONAL_SHOT_BRIEFS.map((brief) => `${brief.slot} — ${brief.label}: ${brief.promptRequirement}`)),
+    includesAdditionalShots ? 'The five additional shots must serve five distinct, complementary roles after the original ten:' : '',
+    ...(isPartial ? additionalBriefs : includesAdditionalShots ? ETSY_ADDITIONAL_SHOT_BRIEFS : []).map((brief) => `${brief.slot} — ${brief.label}: ${brief.planRequirement} Image objective: ${brief.promptRequirement}`),
+    includesAdditionalShots ? [
+      'ADDITIONAL FIVE — EXACT PRODUCT TWIN: Independently inspect the original user-uploaded product references for every requested shot. Treat explicit user facts as authoritative. Never use another generated image as a source of product truth; do not add, remove, mirror, stretch, or redesign any part, and do not infer unseen backs, bottoms, interiors, dimensions, materials, or functions.',
+      'ADDITIONAL FIVE — REAL PHOTOGRAPHY: First identify visible form, proportions, components, materials, finishes, texture, and verified use; then choose a product-specific viewpoint, distance, premium camera/lens category, focus plane, and physically plausible material-aware lighting. Equipment names describe an artistic capture target, not a claim of an actual exposure. Do not force one camera, lens, aperture, palette, or Etsy aesthetic onto every product.',
+      'ADDITIONAL FIVE — FIVE INDEPENDENT DELIVERABLES: E11-E15 are five separate square 1:1 photographs, each one continuous real scene and one composition. No collage, grid, contact sheet, split screen, multi-panel layout, title, measurement line, label, promotional text, watermark, or UI. Do not output a planning essay; return only the required structured JSON.',
+      'ADDITIONAL FIVE — REALISM CHECK: Keep perspective, depth of field, support, contact shadows, reflections, and light direction physically coherent. Preserve source texture scale and product color; do not invent scratches, wear, handmade marks, or repeated texture, and avoid artificial glow, HDR, oversharpening, heavy grading, and CGI-like surfaces.',
+    ].join('\n') : '',
     ...stage?.outline ? [] : [
       'For every requested item, imagePlans.prompt must contain only the product-specific scene concept, verified product attributes, and truthful use or selling context. Keep all camera, lens, exposure, focus, lighting, scene-category, and differentiation decisions inside photographyDecision so the application can assemble a clean production prompt.',
       'For each imagePlans item, label the shot strategy clearly and write planMarkdown as: **[Shot Strategy]:** followed by a specific, creative scene description tailored exactly to this product.',
@@ -1179,7 +1186,6 @@ function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft, stage?: { ou
     'Use diverse views only when they reveal something useful about this product. Build a deliberate rhythm across front/orthographic, three-quarter, side/rear, top-down, low/high, macro, functional POV, and environmental views as appropriate; never rotate the product arbitrarily just to satisfy variety.',
     'Each scene must differ in actual spatial logic, buyer context, and selling job. Renaming the same tabletop, background, or three-quarter composition does not count as diversity.',
     'Material-aware lighting is mandatory: select diffusion, raking light, cross-polarization, black flags, transmitted backlight, edge separation, practical ambience, or daylight shaping according to the verified surface behavior. Preserve true color and physically plausible reflections.',
-    'Dimensions rule: E12 may display only measurements explicitly verified in the supplied facts. If dimensions are absent, use a truthful universal scale cue without any number and state in planMarkdown that the seller must confirm numeric dimensions.',
     'Prompts and negative prompts must be in English. planMarkdown and UI labels should be concise Simplified Chinese.',
     'Keep scenes commercially useful for Etsy. Avoid marketplace badges, fake reviews, prices, coupons, sale stickers, watermarks, QR codes, and unsupported claims.',
     stage?.slots && !isPartial ? '' : 'Return one seriesStyleGuide in English that reinforces only product consistency and a cohesive bespoke campaign derived from the Visual DNA.',

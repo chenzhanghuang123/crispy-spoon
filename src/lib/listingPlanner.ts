@@ -270,47 +270,47 @@ export const ETSY_ADDITIONAL_SHOT_BRIEFS = [
   },
   {
     slot: 'E12',
-    label: '尺寸规格图',
-    planRequirement: '制作清晰、优雅、可信的尺寸与比例图，只能使用用户资料中已验证的尺寸、容量、重量或规格；以简洁测量线、比例参照和易读层级减少购买疑虑。若缺少数字尺寸，不得编造，改用真实通用参照表达比例，并在中文策划中注明需要卖家确认数字。',
-    promptRequirement: 'Create a precise premium size and scale image that removes purchase uncertainty. Display only dimensions, capacity, weight, quantity, and specifications explicitly verified in the product facts. Never infer, round, convert, or invent a number.',
-    compositionRequirement: 'Use a straight-on or true orthographic product view with corrected verticals, the complete product at approximately 62-72% of the frame, generous clean margins, thin measurement lines, restrained arrowheads, and a maximum of three verified labels. Keep labels outside the product silhouette. If no numeric size is verified, omit all numbers and use one universally recognizable scale reference instead.',
-    cameraRequirement: 'Phase One XF IQ4 150MP with Schneider Kreuznach 80mm LS lens, ISO 50, f/11, tripod, calibrated camera height, zero keystone distortion, edge-to-edge sharpness, and accurate product proportions.',
-    lightingRequirement: 'Large even diffused studio source with symmetric fill, subtle grounding shadow, cross-polarization or flagged reflection control when appropriate, neutral color management, and no dramatic rim light or volumetric atmosphere.',
-    finishRequirement: 'Luxury editorial infographic discipline with crisp geometry, high contrast, ample negative space, clean readable numerals, and truthful scale. Prioritize specification clarity over mood, cinematic effects, or decorative styling.',
-    negativeRequirement: 'invented dimensions, incorrect numerals, false measurements, unreadable labels, warped proportions, perspective distortion, cluttered infographic, misleading scale, shallow depth of field, dramatic haze, decorative props, CGI render',
+    label: '形态与结构图',
+    planRequirement: '选择区别于主图、最能解释真实轮廓、厚度、曲线、层次或部件连接关系的摄影角度。只表现参考图或用户明确资料能够确认的结构；参考中看不到的背面、底部、内部、孔位或连接方式不得推测。用透视准确、结构清楚的单一画面呈现，不添加尺寸线或说明文字。',
+    promptRequirement: 'Create a single premium product photograph that explains the exact product’s form and verified structure from a distinctly informative viewpoint. Show only surfaces, components, and relationships supported by the original references or explicit product facts; never invent unseen sides, bottoms, interiors, openings, or connections.',
+    compositionRequirement: 'Keep the complete product recognizable and proportionally accurate. Choose a controlled front, side, three-quarter, or elevated view only when it reveals verified depth, curvature, layers, or component relationships. Use natural perspective, no wide-angle stretching, no cutaway, no exploded view, and no graphic annotations.',
+    cameraRequirement: 'Use a high-resolution professional camera and premium lens suited to the product geometry and chosen viewpoint. Prioritize straight edges, natural perspective, and enough depth of field to keep the structural evidence clear; the AI photographer’s shot-specific capture decision takes precedence.',
+    lightingRequirement: 'Use a physically motivated broad key and restrained fill to reveal depth, edges, joins, and surface transitions without hiding or exaggerating construction. Keep all shadows and reflections consistent with one coherent light direction.',
+    finishRequirement: 'Preserve exact geometry and component relationships with natural perspective, continuous depth of field, accurate color, and restrained retouching. No diagram, measurement line, label, collage, split view, or synthetic cutaway.',
+    negativeRequirement: 'invented rear or interior structure, invented openings or connectors, exploded view, cutaway, diagram, measurement lines, text labels, wide-angle distortion, stretched proportions, hidden components, collage, split screen, CGI render',
   },
   {
     slot: 'E13',
-    label: '匠心细节价值图',
-    planRequirement: '用顶级微距商业摄影证明产品价值，聚焦最能支撑价格与品质感的材质、纹理、手工痕迹、连接结构或表面工艺；通过精准控光、焦点堆栈和细腻高光建立买家信任，但绝不虚构不存在的工艺。',
-    promptRequirement: 'Create a world-class craftsmanship and value-proof macro photograph. Reveal one verified material, texture, handmade detail, joinery, surface treatment, or construction feature that most strongly supports quality and price without inventing craftsmanship.',
-    compositionRequirement: 'Build one decisive macro composition around the verified detail, with enough surrounding product context to identify where that detail belongs. Keep critical edges and construction relationships intact; do not isolate, enlarge, duplicate, or redesign the feature.',
-    cameraRequirement: 'Phase One XF IQ4 150MP with Schneider Kreuznach 120mm Macro LS lens, ISO 50, f/11, geared tripod head, calibrated focus stack across the complete feature, and natural high-resolution microtexture without digital oversharpening.',
-    lightingRequirement: 'Broncolor Picolite or tightly flagged strip light for controlled raking texture, broad soft fill, negative fill for sculptural depth, polarizer rotation tuned to preserve intentional material highlights, and no clipped reflections.',
-    finishRequirement: 'Truthful tactile detail, precise focus-stack transitions, restrained local contrast, clean dust-free retouching, natural grain and pores, controlled highlights, and no beauty-filter smoothing or exaggerated texture.',
-    negativeRequirement: 'plastic texture, fake craftsmanship, invented construction, duplicated detail, enlarged feature, smeared texture, harsh glare, clipped metal highlights, shallow focus hiding the feature, oversharpening, CGI render',
+    label: '真实使用场景图',
+    planRequirement: '将产品放入最合理且有审美价值的真实使用环境，用可信的摆放、安装或操作关系解释已确认的用途。场景功能必须来自用户资料或参考图可证实的信息；若用途或操作方式不明确，改为适配环境中的清晰整体照，不得安排虚构功能、配件或动作。道具克制且不遮挡关键结构。',
+    promptRequirement: 'Create one believable real-use photograph for the exact product, using only a function and interaction supported by the user’s facts or original references. Place or handle the product in a physically plausible way in its most suitable environment. If its use is uncertain, show it clearly in a compatible setting without inventing an action or capability.',
+    compositionRequirement: 'Keep the product immediately identifiable and unobstructed. Show only the minimum surrounding context needed to explain a verified use; make contact, support, attachment, scale, and human interaction physically plausible. Props must not imply included accessories, extra capacity, or unsupported compatibility.',
+    cameraRequirement: 'Select a high-resolution professional camera, natural-perspective lens, camera height, and focus plane for the actual use environment. Keep the product’s important structure sharp while allowing only physically natural background separation; follow the AI photographer’s shot-specific capture decision.',
+    lightingRequirement: 'Use a plausible existing source such as shaped window light or a controlled soft key, with fill and negative fill matched to the scene. Maintain consistent light direction, contact shadows, reflections, and true product color.',
+    finishRequirement: 'Deliver a credible in-situ commercial photograph with natural scale, believable support and contact, accurate product color, and restrained retouching. No staged stock-photo gestures, impossible interaction, text, collage, or artificial cinematic haze.',
+    negativeRequirement: 'unsupported function, impossible use, implausible installation, floating product, extra accessories presented as included, obscured product, exaggerated capacity, distorted hands, false compatibility, text, collage, CGI render',
   },
   {
     slot: 'E14',
-    label: '买家代入场景图',
-    planRequirement: '让目标 Etsy 买家立即想象拥有和使用产品后的生活：选择最匹配受众、用途与审美的真实高端场景，展示可信的人体或空间比例、使用方式和情绪价值，同时保证产品仍是画面第一主角。',
-    promptRequirement: 'Create an aspirational buyer-self-projection lifestyle photograph tailored to the exact Etsy audience and verified real use case. Show believable human or spatial scale, authentic interaction, and emotional reward while keeping the exact product as the clear visual hero.',
-    compositionRequirement: 'Use a natural editorial composition with the product clearly visible at approximately 28-45% of the frame, placed at a strong focal point, unobstructed, and shown at verified real-world scale. A person may provide context but must remain secondary, naturally posed, and never cover or handle the product implausibly.',
-    cameraRequirement: 'Hasselblad X2D 100C with XCD 55V lens, ISO 64, f/5.6, 1/125s, eye-level natural perspective, controlled depth of field that keeps the entire product sharp while allowing only gentle environmental separation.',
-    lightingRequirement: 'Shape existing window or environmental light with a large diffused key, subtle bounce fill, negative fill for dimensionality, and a discreet motivated edge light. Match direction, color temperature, contact shadows, and reflections so the product belongs physically in the scene.',
-    finishRequirement: 'High-end editorial realism with natural skin and material color, believable room scale, quiet styling, no stock-photo posing, no overproduced cinematic haze, and no background element competing with the product.',
-    negativeRequirement: 'generic lifestyle stock photo, product hidden by props, implausible use, wrong audience, distorted anatomy, inaccurate scale, product too small, excessive background blur, cinematic haze, fake interior, CGI render',
+    label: '材质与工艺特写',
+    planRequirement: '先从参考图识别最值得展示且确实可见的材质、纹理、表面处理、边缘、接合处或工艺细节，再决定微距距离、焦平面和材质专属布光。纹理尺度与颜色必须忠于参考；不得虚构手工痕迹、磨损、划痕、内部层次或不存在的接缝。',
+    promptRequirement: 'Create a truthful premium material and craftsmanship close-up of one verified, visible product detail. Choose the detail and magnification from the original reference; preserve its real texture scale, color, finish, and construction. Never invent handmade marks, wear, scratches, seams, or hidden layers.',
+    compositionRequirement: 'Use one decisive close-up with enough surrounding context to identify where the detail belongs on the exact product. Keep the selected feature naturally proportioned and critically sharp; choose a macro or close-focus view only when it reveals real evidence rather than enlarging or redesigning it.',
+    cameraRequirement: 'Choose suitable high-resolution professional macro or close-focus optics, working distance, aperture, and focus strategy for the verified feature. Use focus stacking only when genuinely needed and with seamless, physically plausible transitions; avoid artificial micro-contrast and sharpening halos.',
+    lightingRequirement: 'Tailor the source size, direction, diffusion, flags, and reflection control to the actual material. Use restrained raking light for real texture, controlled soft reflections for metal, or credible transmitted and edge light for transparent materials; preserve natural color and highlight detail.',
+    finishRequirement: 'Render fine but natural material detail, continuous optical focus transitions, believable reflections, and restrained retouching. Do not add scratches, pores, grain, wear, or roughness that are absent from the reference; avoid oversharpening, smoothing, and CGI sheen.',
+    negativeRequirement: 'invented craftsmanship, fake texture, enlarged feature, altered construction, invented seam, scratches, cracks, wear, repeated texture, plastic material response, harsh glare, clipped highlights, oversharpening, smoothing, CGI render',
   },
   {
     slot: 'E15',
-    label: '送礼决策收口图',
-    planRequirement: '用送礼、纪念时刻或购买决策收口场景推动收藏与下单：优先呈现真实可验证的包装、套装内容、个性化能力或适用场合；若这些信息未提供，则改为展示最能消除犹豫的多用途、完整套装或情绪故事，绝不杜撰礼盒、配件和定制选项。',
-    promptRequirement: 'Create a final conversion-closing photograph around verified gift intent, a meaningful occasion, or the strongest remaining purchase-decision proof. Show packaging, included pieces, personalization, or gifting details only when explicitly verified; otherwise use a truthful keepsake, complete-set, versatility, or emotional-value composition.',
-    compositionRequirement: 'Keep the exact product complete, unobstructed, and approximately 55-70% of the frame. Build one restrained emotional cue around it with no more than two verified or neutral supporting elements. Do not add a box, ribbon, card, accessory, duplicate product, or personalization unless supplied in the product facts or references.',
-    cameraRequirement: 'Phase One XF IQ4 150MP with Schneider Kreuznach 80mm LS lens, ISO 50, f/8, 1/125s, tripod, corrected perspective, complete-product sharpness, and realistic scale.',
-    lightingRequirement: 'Use a large soft key with controlled falloff, shaped fill, subtle warm-neutral practical ambience only when motivated by the scene, flagged specular control, and a clean separation edge without theatrical beams or haze.',
-    finishRequirement: 'Refined emotional commerce photography with quiet luxury, believable materials, accurate product color, natural contact shadows, disciplined props, and a decisive product-first hierarchy that closes the sale without sentimentality or staged gift clichés.',
-    negativeRequirement: 'invented gift box, ribbon, greeting card, invented accessories, unsupported personalization, fake claims, duplicate product, sentimental clutter, product too small, theatrical lighting, artificial haze, CGI render',
+    label: '品牌氛围生活方式图',
+    planRequirement: '依据产品自身造型语言、材质、颜色、用途和目标买家，自主选择最协调的空间、背景、桌面、墙面、光线与少量道具，营造品牌气质和进入生活后的想象。与 E13 的功能说明场景拉开差异，以空间氛围和审美表达为主；产品仍须是视觉中心，且不得擅自添加品牌标识、包装、配件或营销文案。',
+    promptRequirement: 'Create one brand-atmosphere lifestyle photograph tailored to this exact product’s design language, materials, color, verified use environment, and likely buyer. Let a coherent real space and motivated light express the product’s character while keeping the exact product as the visual center. Make this distinct from the direct functional-use photograph.',
+    compositionRequirement: 'Use one complete, physically coherent square-frame scene. Keep the product clearly visible and dominant; choose believable room, surface, wall, and prop scale with natural asymmetry and restrained supporting objects. Do not obscure the product or imply unverified packaging, accessories, customization, or brand identity.',
+    cameraRequirement: 'Choose a high-resolution professional camera, premium lens, camera distance, viewpoint, aperture, and focal plane that suit the product and complete environment. Preserve natural perspective and critical product detail; allow only optical, gradual background falloff based on a credible lens and distance.',
+    lightingRequirement: 'Build one motivated key-light direction using the apparent window, practical source, or a controlled studio source. Shape fill and negative fill for the real materials; keep ambient color from shifting product color and make shadows and reflections agree with the space.',
+    finishRequirement: 'Create sophisticated but believable editorial product photography through selection, composition, and natural light rather than heavy grading. Keep realistic intermediate tones, accurate color, clean contact shadows, restrained retouching, and one continuous photographic scene.',
+    negativeRequirement: 'generic stock interior, unrelated luxury props, staged gift clichés, invented logo or branding, invented packaging or accessories, product hidden or too small, inconsistent perspective, floating objects, repeated decor, orange filter, cream filter, teal-orange grading, artificial glow, collage, CGI render',
   },
 ] as const
 
@@ -368,7 +368,7 @@ function mergeEtsyNegativePrompts(...values: Array<string | undefined>): string 
     .join(', ')
 }
 
-function formatEtsyPhotographyDecision(decision: EtsyShotPhotographyDecision): string {
+function formatEtsyPhotographyDecision(decision: EtsyShotPhotographyDecision, isAdditionalShot = false): string {
   return [
     `Why this is right for this product: ${decision.productSuitability}`,
     `Viewpoint: ${decision.angleFamily} — ${decision.angle}`,
@@ -381,7 +381,7 @@ function formatEtsyPhotographyDecision(decision: EtsyShotPhotographyDecision): s
     `Lighting execution: ${decision.lighting}`,
     `Scene family: ${decision.sceneFamily}`,
     `Scene execution: ${decision.scene}`,
-    `Difference from the other fourteen shots: ${decision.differentiation}`,
+    `${isAdditionalShot ? 'Photographic differentiation' : 'Difference from the other fourteen shots'}: ${decision.differentiation}`,
   ].join('\n')
 }
 
@@ -513,9 +513,9 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
   } | null
 }): string {
   const additionalBrief = getEtsyAdditionalShotBrief(plan.slot)
-  const styleBoardArtifacts = additionalBrief?.slot === 'E12'
-    ? 'style board title, typography sample, color swatches, palette strip, copied placeholder text, floating UI panels, split-screen template'
-    : 'typography, captions, labels, callout boxes, leader lines, arrows, color swatches, palette strip, infographic panels, floating UI cards, split-screen template, copied style-board text'
+  const styleBoardArtifacts = additionalBrief
+    ? 'typography, captions, labels, measurement lines, callout boxes, leader lines, arrows, color swatches, palette strip, infographic panels, floating UI cards, collage, grid, contact sheet, split-screen template, copied style-board text'
+    : 'typography, captions, labels, callout boxes, leader lines, arrows, swatches, palette bars, floating panels, grids, split layouts, UI, copied style-board text'
   if (plan.photographyDecision) {
     const visualDnaBlock = getEtsyVisualDnaBlock(plan.seriesStyleGuide)
     const productSpecificPlan = stripLegacyEtsyAdditionalPromptBoilerplate(plan.prompt)
@@ -533,8 +533,11 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
         visualDnaBlock ? `VERIFIED PRODUCT FACTS:\n${visualDnaBlock}` : '',
         additionalBrief ? `SHOT OBJECTIVE:\n${additionalBrief.promptRequirement}` : '',
         productSpecificPlan ? `PRODUCT-SPECIFIC SCENE PLAN:\n${productSpecificPlan}` : '',
-        `AI PHOTOGRAPHER'S PRODUCT-SPECIFIC CAPTURE DECISION:\n${formatEtsyPhotographyDecision(plan.photographyDecision)}`,
-        additionalBrief ? `CONVERSION COMPOSITION GUARDRAILS:\n${additionalBrief.compositionRequirement}` : '',
+        `AI PHOTOGRAPHER'S PRODUCT-SPECIFIC CAPTURE DECISION:\n${formatEtsyPhotographyDecision(plan.photographyDecision, Boolean(additionalBrief))}`,
+        additionalBrief ? `COMPOSITION AND PHYSICAL REALISM GUARDRAILS:\n${additionalBrief.compositionRequirement}` : '',
+        additionalBrief
+          ? 'SINGLE-PHOTOGRAPH DELIVERY: Render one independent square 1:1 photograph in one continuous, physically coherent scene. Do not create a collage, grid, contact sheet, split screen, multi-panel layout, title, measurement line, label, promotional text, watermark, or UI. Judge the finished image against the original uploaded product references, not another generated image.'
+          : '',
         additionalBrief ? `FINISH AND QUALITY CONTROL:\n${additionalBrief.finishRequirement}` : 'FINISH AND QUALITY CONTROL:\nWorld-class commissioned commercial photography, physically believable optics and light, accurate color management, natural contact shadows, disciplined retouching, and no generic AI-rendered appearance.',
         'FINAL PRODUCT CHECK: product identity, geometry, component positions, dimensions, material, color, finish, and quantity must match the product references before any aesthetic consideration. The result must look like a real commissioned photograph, not a 3D render or generic AI image.',
         'No marketplace badges, fake reviews, prices, coupons, sale stickers, watermarks, QR codes, or UI screenshots.',
