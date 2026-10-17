@@ -39,7 +39,7 @@ import {
   type AmazonPlannerMode,
   type AmazonStyleDensityMode,
 } from '../lib/listingPlanner'
-import { callAmazonPlannerApi, callEtsyListingDetailsApi, formatEtsyListingDetailsMarkdown, mergeEtsyShotGroups, type EtsyShotGroup, type PlannerApiResult } from '../lib/listingPlannerApi'
+import { callAmazonPlannerApi, callEtsyListingDetailsApi, formatEtsyListingDetailsMarkdown, type EtsyShotGroup, type PlannerApiResult } from '../lib/listingPlannerApi'
 import { deleteAmazonPlannerSession, getAllAmazonPlannerSessions, putAmazonPlannerSession } from '../lib/db'
 import {
   AMAZON_MARKETPLACES,
@@ -714,8 +714,8 @@ export default function AmazonPlanner() {
       : !hasPlanOptions
         ? {
             target: 'planner-action',
-            message: plannerMode === 'etsy'
-              ? '下一步：分开策划原有10张与新增5张；两部分会自动合并'
+              message: plannerMode === 'etsy'
+              ? '下一步：点击对应按钮，只策划原有10张或新增5张；两组方案独立显示'
               : plannerMode === 'aplus' ? '下一步：点击 AI策划A+ 生成模块方案' : '下一步：点击 AI策划生成逐张方案',
           }
         : seriesStyleReferenceNeeded && !hasStyleReference
@@ -1296,8 +1296,8 @@ export default function AmazonPlanner() {
   const applyPlannerResult = (result: PlannerApiResult, sourceLabel: string) => {
     const resultMarketplaceId = normalizeAmazonMarketplaceId(result.marketplaceId)
     const firstPlan = result.plans[0]
-    const isEtsyMerge = result.mode === 'etsy' && Boolean(result.etsyShotGroup) && imagePlans.length > 0 && canContinueEtsyCampaign
-    const keepExistingEtsyIdentity = isEtsyMerge && Boolean(etsyVisualDna && etsyPhotographyAnalysis)
+    const hasExistingEtsyCampaign = result.mode === 'etsy' && Boolean(result.etsyShotGroup) && imagePlans.length > 0 && canContinueEtsyCampaign
+    const keepExistingEtsyIdentity = hasExistingEtsyCampaign && Boolean(etsyVisualDna && etsyPhotographyAnalysis)
     const nextDraft = keepExistingEtsyIdentity ? draft : {
       ...draft,
       ...result.parsed.inferred,
@@ -1309,7 +1309,7 @@ export default function AmazonPlanner() {
       ...seriesStyleGuides,
       [result.mode]: keepExistingEtsyIdentity ? seriesStyleGuides.etsy : result.seriesStyleGuide,
     }
-    const nextImagePlans = result.mode === 'aplus' ? [] : isEtsyMerge ? mergeEtsyShotGroups(imagePlans, result.plans) : result.plans
+    const nextImagePlans = result.mode === 'aplus' ? [] : result.plans
     const nextAPlusPlans = result.mode === 'aplus' ? withAPlusGenerationSizes(result.aPlusPlans, resolutionTier) : []
     const nextSelectedPlanIndex = result.mode !== 'aplus' && result.plans.length
       ? Math.max(0, nextImagePlans.findIndex((plan) => plan.slot === firstPlan?.slot))
@@ -1337,27 +1337,16 @@ export default function AmazonPlanner() {
     setSeriesStyleGuides(nextSeriesStyleGuides)
     setEtsyVisualDna(nextEtsyVisualDna)
     setEtsyPhotographyAnalysis(nextEtsyPhotographyAnalysis)
-    if (!isEtsyMerge) {
+    if (!hasExistingEtsyCampaign) {
       setSelectedStylePresetId(DEFAULT_STYLE_PRESET_ID)
       setSelectedStyleReference(null)
       setStylePreview(null)
       setStyleError('')
     }
     setPlannerError('')
-    if (isEtsyMerge) {
-      const replacedSlots = new Set(result.plans.map((plan) => plan.slot))
-      setActionProgress((current) => Object.fromEntries(nextImagePlans.flatMap((plan, index) => {
-        if (replacedSlots.has(plan.slot)) return []
-        const previousIndex = imagePlans.findIndex((existing) => existing.slot === plan.slot)
-        if (previousIndex < 0) return []
-        const previousProgress = current[getPlannerActionKey('etsy', previousIndex, plan.slot)]
-        return previousProgress ? [[getPlannerActionKey('etsy', index, plan.slot), previousProgress]] : []
-      })))
-    } else {
-      setActionProgress({})
-    }
+    setActionProgress({})
     void savePlannerSession({
-      id: isEtsyMerge ? currentPlannerSessionId ?? createPlannerSessionId() : createPlannerSessionId(),
+      id: createPlannerSessionId(),
       mode: toAmazonPlannerSessionMode(result.mode),
       marketplaceId: resultMarketplaceId,
       listingImageCount,
@@ -1369,7 +1358,7 @@ export default function AmazonPlanner() {
       styleCandidates: [],
       styleImages: [],
       selectedStyleIndex: null,
-      ...(!isEtsyMerge ? {
+      ...(!hasExistingEtsyCampaign ? {
         selectedStylePresetId: DEFAULT_STYLE_PRESET_ID,
         selectedStyleReferenceImageId: null,
         selectedCustomStyleReferenceId: null,
@@ -1381,7 +1370,7 @@ export default function AmazonPlanner() {
       selectedPlanIndex: nextSelectedPlanIndex,
       selectedAPlusPlanIndex: nextSelectedAPlusPlanIndex,
     })
-      .then((session) => isEtsyMerge ? null : selectStylePreset(DEFAULT_STYLE_PRESET_ID, { silent: true, persist: false })
+      .then((session) => hasExistingEtsyCampaign ? null : selectStylePreset(DEFAULT_STYLE_PRESET_ID, { silent: true, persist: false })
         .then((reference) => {
           if (!reference) return
           const nextSession = {
@@ -2295,7 +2284,7 @@ export default function AmazonPlanner() {
               {isEtsyListingMode
                 ? '此页面只生成 Etsy Listing 文案，不生成图片。联网能力可用时会验证当前关键词与市场术语；不可用时会明确标注。'
                  : isEtsyImageMode
-                     ? '原有10张与新增5张可分别策划；两个请求成功后按 E01-E15 自动合并。Phase 2 点击提交生成时才调用生图配置。'
+                     ? '原有10张与新增5张分别策划、分别显示；点击哪个按钮就只处理对应镜头。Phase 2 点击提交生成时才调用生图配置。'
                   : 'AI策划使用设置中的策划配置，生图配置保持不变。'}
             </div>
             {plannerUsesOfficialDeepSeek && (
@@ -3219,7 +3208,7 @@ export default function AmazonPlanner() {
               value={plannerMode === 'aplus' && !selectedAPlusPlan
                 ? '请先点击 AI策划A+，再在右侧选择一个 A+ 模块。'
                  : plannerMode === 'etsy' && !selectedPlan
-                   ? '请先填写产品描述，再选择“原有10张”或“新增5张”进行 Etsy 策划。两部分成功后会自动合并为 E01-E15。'
+                   ? '请先填写产品描述，再选择“原有10张”或“新增5张”进行 Etsy 策划。每次只显示当前按钮对应的策划方案。'
                   : activePlanPreview || '请先粘贴 Listing 并点击 AI策划，LLM 会生成中文策划、英文 Prompt 和 Negative Prompt。'}
               className={`ios-field w-full resize-none p-3 font-mono text-xs leading-relaxed text-gray-700 dark:text-gray-200 ${hasSelectedPlan ? 'h-[430px]' : 'h-36 sm:h-44'}`}
               spellCheck={false}
