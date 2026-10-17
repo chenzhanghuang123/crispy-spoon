@@ -567,6 +567,8 @@ describe('callAmazonPlannerApi', () => {
     expect(firstBody.instructions).toContain('E01, E02, E03, E04, E05, E06, E07, E08, E09, E10')
     expect(firstBody.instructions).toContain('ORIGINAL TEN — WORLD-CLASS CREATIVE DIRECTION')
     expect(firstBody.instructions).toContain('Build a product-specific E01-E10 sequence of complementary selling jobs')
+    expect(firstBody.instructions).toContain('ORIGINAL TEN — PRODUCT IDENTITY PRIORITY')
+    expect(firstBody.instructions).toContain('so product truth wins')
     expect(firstBody.instructions).toContain('ORIGINAL TEN — MASTER-LEVEL MATERIAL LIGHTING')
     expect(firstBody.instructions).toContain('ORIGINAL TEN — PURPOSE-CHOSEN TOP-TIER EQUIPMENT')
     expect(firstBody.instructions).not.toContain('E11 — 吸睛首页图')
