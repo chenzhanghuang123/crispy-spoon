@@ -511,6 +511,7 @@ export default function AmazonPlanner() {
   const [currentPlannerSessionId, setCurrentPlannerSessionId] = useState<string | null>(null)
   const [showPlannerHistory, setShowPlannerHistory] = useState(false)
   const [isPlanning, setIsPlanning] = useState(false)
+  const [planningEtsyShotGroup, setPlanningEtsyShotGroup] = useState<EtsyShotGroup | null>(null)
   const [isGeneratingEtsyBatch, setIsGeneratingEtsyBatch] = useState(false)
   const [isGeneratingEtsyListing, setIsGeneratingEtsyListing] = useState(false)
   const [plannerError, setPlannerError] = useState('')
@@ -1421,6 +1422,7 @@ export default function AmazonPlanner() {
     const controller = new AbortController()
     plannerAbortControllerRef.current = controller
     setIsPlanning(true)
+    setPlanningEtsyShotGroup(plannerMode === 'etsy' ? etsyShotGroup ?? null : null)
     setPlannerError('')
     try {
       const currentMarketplaceId = marketplaceId
@@ -1454,6 +1456,7 @@ export default function AmazonPlanner() {
       if (plannerAbortControllerRef.current === controller) {
         plannerAbortControllerRef.current = null
         setIsPlanning(false)
+        setPlanningEtsyShotGroup(null)
       }
     }
   }
@@ -1464,6 +1467,7 @@ export default function AmazonPlanner() {
     controller.abort()
     plannerAbortControllerRef.current = null
     setIsPlanning(false)
+    setPlanningEtsyShotGroup(null)
     showToast('AI 策划已停止', 'info')
   }
 
@@ -2209,17 +2213,17 @@ export default function AmazonPlanner() {
                       type="button"
                       onClick={() => void createAiPlan('original')}
                       disabled={isPlanning || isGeneratingEtsyListing || Boolean(plannerProfileValidation)}
-                      className={`ios-button h-10 px-3 text-sm font-semibold ${isPlanning ? 'cursor-wait bg-gray-400 text-white' : isGeneratingEtsyListing || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-filled'} ${guideState.target === 'planner-action' ? 'ring-2 ring-[hsl(var(--primary)/0.25)] ring-offset-2 ring-offset-white dark:ring-offset-gray-950' : ''}`}
+                      className={`ios-button h-10 px-3 text-sm font-semibold ${isPlanning && planningEtsyShotGroup === 'original' ? 'cursor-wait bg-gray-400 text-white' : isPlanning || isGeneratingEtsyListing || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-filled'} ${guideState.target === 'planner-action' ? 'ring-2 ring-[hsl(var(--primary)/0.25)] ring-offset-2 ring-offset-white dark:ring-offset-gray-950' : ''}`}
                     >
-                      {isPlanning ? '策划中...' : `原有${ETSY_ORIGINAL_SHOT_COUNT}张`}
+                      {isPlanning && planningEtsyShotGroup === 'original' ? '策划中...' : `原有${ETSY_ORIGINAL_SHOT_COUNT}张`}
                     </button>
                     <button
                       type="button"
                       onClick={() => void createAiPlan('additional')}
                       disabled={isPlanning || isGeneratingEtsyListing || Boolean(plannerProfileValidation)}
-                      className={`ios-button h-10 px-3 text-sm font-semibold ${isPlanning ? 'cursor-wait bg-gray-400 text-white' : isGeneratingEtsyListing || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-plain'}`}
+                      className={`ios-button h-10 px-3 text-sm font-semibold ${isPlanning && planningEtsyShotGroup === 'additional' ? 'cursor-wait bg-gray-400 text-white' : isPlanning || isGeneratingEtsyListing || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-plain'}`}
                     >
-                      {isPlanning ? '策划中...' : `新增${ETSY_SHOT_COUNT - ETSY_ORIGINAL_SHOT_COUNT}张`}
+                      {isPlanning && planningEtsyShotGroup === 'additional' ? '策划中...' : `新增${ETSY_SHOT_COUNT - ETSY_ORIGINAL_SHOT_COUNT}张`}
                     </button>
                   </>
                 ) : (
