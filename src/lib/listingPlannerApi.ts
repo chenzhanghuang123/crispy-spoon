@@ -1725,6 +1725,28 @@ function normalizeEtsyShotBatch(payload: PlannerApiPayload, outline: EtsyShotOut
   })
 }
 
+function assertEtsyStageContent(payload: PlannerApiPayload, slots: string[]): void {
+  if (!isRecordValue(payload)) throw new Error('Etsy 策划结果必须是 JSON 对象')
+  const plans = payload.imagePlans
+  if (!Array.isArray(plans) || plans.length !== slots.length) throw new Error(`Etsy 策划结果必须包含 ${slots.length} 张图`)
+  for (const slot of slots) {
+    const matching = plans.filter((plan) => isRecordValue(plan) && plan.slot === slot)
+    if (matching.length !== 1) throw new Error(`Etsy 策划结果缺少或重复镜头 ${slot}`)
+    const plan = matching[0]!
+    for (const field of ['label', 'planMarkdown', 'prompt'] as const) {
+      if (!normalizePlannerText(plan[field])) throw new Error(`Etsy 镜头 ${slot} 的 ${field} 必须是非空字符串`)
+    }
+    if (typeof plan.negativePrompt !== 'string') throw new Error(`Etsy 镜头 ${slot} 的 negativePrompt 必须是字符串`)
+    const decision = plan.photographyDecision
+    if (!isRecordValue(decision)) throw new Error(`Etsy 镜头 ${slot} 缺少 photographyDecision`)
+    for (const field of ETSY_PHOTOGRAPHY_DECISION_FIELDS) {
+      if (!(field in ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS) && !normalizePlannerText(decision[field])) {
+        throw new Error(`Etsy 镜头 ${slot} 缺少摄影细节 ${field}`)
+      }
+    }
+  }
+}
+
 async function repairEtsyPhotographyCategories(
   payload: PlannerApiPayload,
   stage: EtsyPlannerRequestStage,
@@ -1877,6 +1899,7 @@ async function callBatchedEtsyPlanner(options: {
       let payload: PlannerApiPayload
       try {
         payload = parsePlannerPayload(result.text)
+        assertEtsyStageContent(payload, stage.slots)
       } catch (error) {
         validationError = error instanceof Error ? error.message : String(error)
         if (attempt === 1) throw new Error(`Etsy ${stage.name}自动纠错后仍未通过：${validationError}`)
@@ -1909,9 +1932,9 @@ async function callBatchedEtsyPlanner(options: {
       const lockContext = previous
         ? [
           'The first five shots are already locked. Keep the exact product identity and campaign diagnosis, and create complementary assignments for the remaining five.',
-          `First-half assignments: ${JSON.stringify(previous.plans.map((plan) => ({ slot: plan.slot, label: plan.label, angleFamily: plan.photographyDecision?.angleFamily, shotScale: plan.photographyDecision?.shotScale, lensClass: plan.photographyDecision?.lensClass, lightingFamily: plan.photographyDecision?.lightingFamily, sceneFamily: plan.photographyDecision?.sceneFamily })))}`,
+          `First-half assignments: ${JSON.stringify(previous.plans.map((plan) => ({ slot: plan.slot, label: plan.label, planMarkdown: plan.planMarkdown, angleFamily: plan.photographyDecision?.angleFamily, angle: plan.photographyDecision?.angle, shotScale: plan.photographyDecision?.shotScale, framing: plan.photographyDecision?.framing, lensClass: plan.photographyDecision?.lensClass, lightingFamily: plan.photographyDecision?.lightingFamily, sceneFamily: plan.photographyDecision?.sceneFamily, scene: plan.photographyDecision?.scene })))}`,
           `Locked campaign diagnosis: ${JSON.stringify({ visualDna: previous.etsyVisualDna, photographyAnalysis: previous.etsyPhotographyAnalysis })}`,
-          'Do not repeat the first-half slots. Across the complete ten-shot campaign, avoid reusing the same angle, scale, lens, lighting, and scene combination unless the product truly requires it.',
+          'Do not repeat the first-half slots, scenes, or buyer purposes. Across all ten, no two shots may share the same angleFamily + shotScale + lightingFamily + sceneFamily combination.',
         ].join('\n')
         : 'This is the first half of a ten-shot campaign. Establish strong product-specific variety so the second half can complement it.'
       const productionOutputRule = 'Keep the complete English generation prompt and all 15 photographyDecision fields detailed; keep only the Chinese UI summary and shot-specific negative exclusions concise.'
@@ -1924,6 +1947,7 @@ async function callBatchedEtsyPlanner(options: {
         instructions: [
           buildEtsyPlannerInstructions(options.baseDraft, { slots: group, partial: true }),
           options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : '',
+          previous ? 'Keep the campaign-level fields identical: copy the supplied locked visualDna and photographyAnalysis into their required JSON fields; do not reanalyze them. Across the combined ten shots, use at least 4 angleFamily values, 3 shotScale values, 3 lensClass values, 3 lightingFamily values, and 4 sceneFamily values. Compare the actual scenes, views, framing, and buyer purposes against the first half, not just their category IDs.' : '',
         ].filter(Boolean).join('\n'),
         inputText: [options.buildInputText(group), lockContext, productionOutputRule].join('\n\n'),
       }, (payload) => {
@@ -2104,7 +2128,10 @@ export async function callAmazonPlannerApi(options: {
         includeReferenceImageInstruction: !isDeepSeekPlannerProfile,
         userProductFacts: buildUserProductFactsText(options.baseDraft),
         etsySlots: slots,
-        etsyCampaignContext: options.etsyCampaignContext,
+        etsyCampaignContext: options.etsyCampaignContext ? {
+          ...options.etsyCampaignContext,
+          plans: options.etsyCampaignContext.plans.filter((plan) => !etsySlots.includes(plan.slot)),
+        } : undefined,
       }),
       textOnlyReferenceGuard: isDeepSeekPlannerProfile,
       marketplaceId,
