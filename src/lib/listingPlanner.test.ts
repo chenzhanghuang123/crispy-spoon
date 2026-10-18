@@ -628,6 +628,37 @@ describe('callAmazonPlannerApi', () => {
     expect(fetchMock).toHaveBeenCalledTimes(6)
   })
 
+  it('normalizes common Etsy angle-family aliases from the planning model', async () => {
+    const fullPayload = createEtsyPayload()
+    const slots = getEtsyImageSlots().slice(0, ETSY_ORIGINAL_SHOT_COUNT)
+    const response = (payload: unknown) => new Response(JSON.stringify({ output_text: JSON.stringify(payload) }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      const body = JSON.parse(String(init.body))
+      const properties = body.text.format.schema.properties
+      if (properties.shotOutline) {
+        const outline = createEtsyOutlinePayload(fullPayload, slots)
+        outline.shotOutline[0]!.angleFamily = 'orthographic'
+        return response(outline)
+      }
+      const requestedSlots = properties.imagePlans.items.properties.slot.enum as string[]
+      return response({ imagePlans: fullPayload.imagePlans.filter((plan) => requestedSlots.includes(plan.slot)) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug with speckled stoneware and a raw clay foot.',
+      baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
+      mode: 'etsy',
+      etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' }),
+    })
+
+    expect(result.plans[0]?.photographyDecision?.angleFamily).toBe('front-orthographic')
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+  })
+
   it('requests only five Etsy slots through Chat Completions', async () => {
     const fullPayload = createEtsyPayload()
     const payload = { ...fullPayload, imagePlans: fullPayload.imagePlans.slice(ETSY_ORIGINAL_SHOT_COUNT) }

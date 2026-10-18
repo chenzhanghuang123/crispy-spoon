@@ -282,6 +282,30 @@ interface EtsyPlannerRequestStage {
   outline?: boolean
 }
 
+const ETSY_ANGLE_FAMILY_ALIASES: Record<string, (typeof ETSY_ANGLE_FAMILIES)[number]> = {
+  orthographic: 'front-orthographic',
+  'orthographic-view': 'front-orthographic',
+  'front-view': 'front-orthographic',
+  'front-view-orthographic': 'front-orthographic',
+  'straight-on': 'front-orthographic',
+  'straight-on-view': 'front-orthographic',
+  'three-quarter-view': 'three-quarter',
+  'three-quarter-angle': 'three-quarter',
+  side: 'side-profile',
+  'side-view': 'side-profile',
+  'rear-view': 'rear',
+  overhead: 'top-down',
+  'top-view': 'top-down',
+  'low-view': 'low-angle',
+  'high-view': 'high-angle',
+  macro: 'macro-detail',
+  'close-up': 'macro-detail',
+  'wide-environmental': 'environmental-wide',
+  environmental: 'environmental-wide',
+  pov: 'functional-pov',
+  'point-of-view': 'functional-pov',
+}
+
 const ETSY_LENS_CLASS_ALIASES: Record<string, (typeof ETSY_LENS_CLASSES)[number]> = {
   'normal-lens': 'normal',
   'normal-prime': 'normal',
@@ -1005,7 +1029,11 @@ function normalizeEtsyPhotographyCategories(source: Partial<EtsyPhotographyCateg
     categories[field] = normalizePhotographyCategory(
       normalizePlannerText(source[field]),
       allowedValues,
-      field === 'lensClass' ? ETSY_LENS_CLASS_ALIASES : undefined,
+      field === 'angleFamily'
+        ? ETSY_ANGLE_FAMILY_ALIASES
+        : field === 'lensClass'
+          ? ETSY_LENS_CLASS_ALIASES
+          : undefined,
     )
     if (!allowedValues.includes(categories[field])) {
       throw new Error(`Etsy 镜头 ${slot} 的 ${field} 不在摄影自动判断分类中：${categories[field]}`)
