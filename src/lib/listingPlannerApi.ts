@@ -281,6 +281,7 @@ interface EtsyPlannerRequestStage {
   slots: string[]
   outline?: boolean
   fullPlan?: boolean
+  categoryRepair?: boolean
 }
 
 const ETSY_ANGLE_FAMILY_ALIASES: Record<string, (typeof ETSY_ANGLE_FAMILIES)[number]> = {
@@ -1023,19 +1024,23 @@ function normalizeEtsyPhotographyDecision(plan: AmazonImagePlan): EtsyShotPhotog
   return { ...decision, ...normalizeEtsyPhotographyCategories(decision, plan.slot) }
 }
 
+function normalizeEtsyPhotographyCategory(field: EtsyPhotographyCategory, value: unknown): string {
+  return normalizePhotographyCategory(
+    normalizePlannerText(value),
+    ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS[field].enum,
+    field === 'angleFamily'
+      ? ETSY_ANGLE_FAMILY_ALIASES
+      : field === 'lensClass'
+        ? ETSY_LENS_CLASS_ALIASES
+        : undefined,
+  )
+}
+
 function normalizeEtsyPhotographyCategories(source: Partial<EtsyPhotographyCategories>, slot: string): EtsyPhotographyCategories {
   const categories = {} as EtsyPhotographyCategories
   for (const field of Object.keys(ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS) as EtsyPhotographyCategory[]) {
     const allowedValues: readonly string[] = ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS[field].enum
-    categories[field] = normalizePhotographyCategory(
-      normalizePlannerText(source[field]),
-      allowedValues,
-      field === 'angleFamily'
-        ? ETSY_ANGLE_FAMILY_ALIASES
-        : field === 'lensClass'
-          ? ETSY_LENS_CLASS_ALIASES
-          : undefined,
-    )
+    categories[field] = normalizeEtsyPhotographyCategory(field, source[field])
     if (!allowedValues.includes(categories[field])) {
       throw new Error(`Etsy 镜头 ${slot} 的 ${field} 不在摄影自动判断分类中：${categories[field]}`)
     }
@@ -1720,9 +1725,109 @@ function normalizeEtsyShotBatch(payload: PlannerApiPayload, outline: EtsyShotOut
   })
 }
 
+async function repairEtsyPhotographyCategories(
+  payload: PlannerApiPayload,
+  stage: EtsyPlannerRequestStage,
+  request: (stage: EtsyPlannerRequestStage) => Promise<PlannerResponseTextResult>,
+): Promise<PlannerApiPayload> {
+  if (!isRecordValue(payload)) return payload
+  const plans = payload.imagePlans
+  if (!Array.isArray(plans) || plans.length !== stage.slots.length
+    || stage.slots.some((slot) => plans.filter((plan) => plan?.slot === slot).length !== 1)) return payload
+
+  const categoryFields = Object.keys(ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS) as EtsyPhotographyCategory[]
+  const invalid = plans.flatMap((plan) => {
+    if (!isRecordValue(plan.photographyDecision)) return []
+    const fields = categoryFields.filter((field) => {
+      const allowed: readonly string[] = ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS[field].enum
+      return !allowed.includes(normalizeEtsyPhotographyCategory(field, plan.photographyDecision?.[field]))
+    })
+    return fields.length ? [{ slot: plan.slot!, fields, plan }] : []
+  })
+  if (!invalid.length) return payload
+
+  // Repair classification metadata only; never regenerate an already-written photograph.
+  const correctionProperties = Object.fromEntries(invalid.map(({ slot, fields }) => [slot, {
+    type: 'object',
+    additionalProperties: false,
+    properties: Object.fromEntries(fields.map((field) => [field, ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS[field]])),
+    required: fields,
+  }]))
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      categoryCorrections: {
+        type: 'object',
+        additionalProperties: false,
+        properties: correctionProperties,
+        required: invalid.map(({ slot }) => slot),
+      },
+    },
+    required: ['categoryCorrections'],
+  }
+  const repairStage: EtsyPlannerRequestStage = {
+    name: `${stage.name}分类校正`,
+    slots: invalid.map(({ slot }) => slot),
+    categoryRepair: true,
+    schema,
+    instructions: [
+      'Classify the existing photographs; do not redesign them or generate new prompts.',
+      'Correct only the requested invalid category fields, using the existing detailed viewpoint, framing, optics, light, and scene as evidence.',
+      'A shot role such as hero is not a shot scale. Determine scale from framing and product occupancy, not from the title or selling purpose.',
+      'Use exactly the allowed IDs in the output schema. Never change valid categories or photographic content to manufacture diversity.',
+      `Return JSON only matching this schema: ${JSON.stringify(schema)}`,
+    ].join('\n'),
+    inputText: JSON.stringify({
+      shots: invalid.map(({ slot, fields, plan }) => ({
+        slot,
+        invalidFields: fields,
+        label: plan.label,
+        prompt: plan.prompt,
+        photographyDecision: plan.photographyDecision,
+      })),
+    }),
+  }
+  let feedback = ''
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    // Network failures propagate; only malformed classification output is retried.
+    const result = await request({ ...repairStage, inputText: [repairStage.inputText, feedback].filter(Boolean).join('\n\n') })
+    try {
+      const correctionPayload: unknown = parsePlannerPayload(result.text)
+      const corrections = isRecordValue(correctionPayload) ? correctionPayload.categoryCorrections : undefined
+      if (!isRecordValue(corrections)
+        || Object.keys(corrections).length !== invalid.length
+        || invalid.some(({ slot }) => !isRecordValue(corrections[slot]))) {
+        throw new Error('Etsy 分类校正未返回所需镜头的 categoryCorrections')
+      }
+      for (const { slot, fields } of invalid) {
+        const corrected = corrections[slot] as Record<string, unknown>
+        if (Object.keys(corrected).length !== fields.length || fields.some((field) => {
+          const allowed: readonly string[] = ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS[field].enum
+          return !allowed.includes(normalizeEtsyPhotographyCategory(field, corrected[field]))
+        })) throw new Error(`Etsy 镜头 ${slot} 的分类校正必须仅返回合法的 ${fields.join(', ')}`)
+      }
+      return {
+        ...payload,
+        imagePlans: plans.map((plan) => {
+          const corrected = corrections[plan.slot!]
+          return isRecordValue(corrected)
+            ? { ...plan, photographyDecision: { ...plan.photographyDecision, ...corrected } as EtsyShotPhotographyDecision }
+            : plan
+        }),
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (attempt === 1) throw new Error(`Etsy ${stage.name}分类校正未通过：${message}`)
+      feedback = `Correct this classification error: ${message}\nPrevious correction output: ${result.text}`
+    }
+  }
+  throw new Error('Etsy 分类校正未完成')
+}
+
 async function callBatchedEtsyPlanner(options: {
   baseDraft: AmazonPromptDraft
-  inputText: string
+  buildInputText: (slots: string[]) => string
   textOnlyReferenceGuard: boolean
   marketplaceId: AmazonMarketplaceId
   fallbackTitle: string
@@ -1737,41 +1842,55 @@ async function callBatchedEtsyPlanner(options: {
   if (options.signal?.aborted) abort()
   options.signal?.addEventListener('abort', abort, { once: true })
 
+  const requestStage = async (stage: EtsyPlannerRequestStage): Promise<PlannerResponseTextResult> => {
+    controller.signal.throwIfAborted()
+    const stageController = new AbortController()
+    const stop = () => stageController.abort(controller.signal.reason)
+    controller.signal.addEventListener('abort', stop, { once: true })
+    let timedOut = false
+    const timer = setTimeout(() => { timedOut = true; stageController.abort() }, 180_000)
+    try {
+      return await options.request(stage, stageController.signal)
+    } catch (error) {
+      if (timedOut) throw new Error(`Etsy ${stage.name}等待超过 3 分钟，服务商上游仍未完成响应。`)
+      throw error
+    } finally {
+      clearTimeout(timer)
+      controller.signal.removeEventListener('abort', stop)
+      stageController.abort()
+    }
+  }
+
   const runStage = async <T,>(stage: EtsyPlannerRequestStage, validate: (payload: PlannerApiPayload) => T): Promise<T> => {
     let previousOutput = ''
     let validationError = ''
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      controller.signal.throwIfAborted()
-      const stageController = new AbortController()
-      const stop = () => stageController.abort(controller.signal.reason)
-      controller.signal.addEventListener('abort', stop, { once: true })
-      let timedOut = false
-      const timer = setTimeout(() => { timedOut = true; stageController.abort() }, 180_000)
-      let result: PlannerResponseTextResult
+      const result = await requestStage({
+        ...stage,
+        inputText: attempt === 0 ? stage.inputText : [
+          stage.inputText,
+          `Repair only this stage. Validation error: ${validationError}`,
+          'Keep all verified product facts and valid shot categories. Correct the reported failure, preserving detailed photographic content unless it causes that failure. Return complete JSON for this stage only.',
+          `Previous stage output: ${previousOutput}`,
+        ].join('\n\n'),
+      })
+      let payload: PlannerApiPayload
       try {
-        result = await options.request({
-          ...stage,
-          inputText: attempt === 0 ? stage.inputText : [
-            stage.inputText,
-            `Repair only this stage. Validation error: ${validationError}`,
-            'Keep all locked product facts and the assigned shot categories; return the complete JSON for this stage only.',
-            `Previous stage output: ${previousOutput}`,
-          ].join('\n\n'),
-        }, stageController.signal)
-      } catch (error) {
-        if (timedOut) throw new Error(`Etsy ${stage.name}等待超过 3 分钟，服务商上游仍未完成响应。`)
-        throw error
-      } finally {
-        clearTimeout(timer)
-        controller.signal.removeEventListener('abort', stop)
-        stageController.abort()
-      }
-      try {
-        return validate(parsePlannerPayload(result.text))
+        payload = parsePlannerPayload(result.text)
       } catch (error) {
         validationError = error instanceof Error ? error.message : String(error)
         if (attempt === 1) throw new Error(`Etsy ${stage.name}自动纠错后仍未通过：${validationError}`)
         previousOutput = result.text
+        continue
+      }
+      // A network error must propagate, not trigger another costly full-plan request.
+      payload = await repairEtsyPhotographyCategories(payload, stage, requestStage)
+      try {
+        return validate(payload)
+      } catch (error) {
+        validationError = error instanceof Error ? error.message : String(error)
+        if (attempt === 1) throw new Error(`Etsy ${stage.name}自动纠错后仍未通过：${validationError}`)
+        previousOutput = JSON.stringify(payload)
       }
     }
     throw new Error(validationError)
@@ -1806,7 +1925,7 @@ async function callBatchedEtsyPlanner(options: {
           buildEtsyPlannerInstructions(options.baseDraft, { slots: group, partial: true }),
           options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : '',
         ].filter(Boolean).join('\n'),
-        inputText: [options.inputText, lockContext, productionOutputRule].join('\n\n'),
+        inputText: [options.buildInputText(group), lockContext, productionOutputRule].join('\n\n'),
       }, (payload) => {
         const normalized = normalizeEtsyPlannerApiPayload(payload, options.marketplaceId, options.fallbackTitle, group)
         if (previous) assertEtsyPhotographyDiversity([...previous.plans, ...normalized.plans])
@@ -1830,6 +1949,9 @@ async function callBatchedEtsyPlanner(options: {
 }
 
 function buildChatEtsyStageGuide(stage: EtsyPlannerRequestStage): string {
+  if (stage.categoryRepair) {
+    return 'Return only categoryCorrections as specified by the schema. No prompts, imagePlans, explanation, or other fields.'
+  }
   if (stage.outline) {
     return [
       'Return valid JSON only with keys product, sellingPoints, visualDna, photographyAnalysis, seriesStyleGuide, and shotOutline.',
@@ -1839,10 +1961,8 @@ function buildChatEtsyStageGuide(stage: EtsyPlannerRequestStage): string {
   }
   if (stage.fullPlan) {
     return [
-      'Return valid JSON only with keys product, sellingPoints, visualDna, photographyAnalysis, seriesStyleGuide, and imagePlans.',
-      'imagePlans must contain exactly these slots in order: ' + stage.slots.join(', ') + '.',
-      'Each imagePlans item must include slot, label, planMarkdown, prompt, negativePrompt, and photographyDecision.',
-      'photographyDecision must include productSuitability, angleFamily, angle, shotScale, framing, cameraSystem, lensClass, lens, exposure, focusStrategy, lightingFamily, lighting, sceneFamily, scene, and differentiation.',
+      buildChatPlannerSchemaGuide('etsy', 'standard-large', { etsySlots: stage.slots }),
+      'Classify shotScale by actual framing and product occupancy, not by a selling role such as hero. Put creative role names in label or planMarkdown, never in the five category IDs.',
     ].join('\n')
   }
   return [
@@ -1908,7 +2028,7 @@ export async function callAmazonPlannerApi(options: {
     const requestInputText = stage?.inputText ?? (repair
       ? buildEtsyPlannerRepairInput(repair.previousOutput, repair.errorMessage, etsySlots, options.etsyCampaignContext)
       : inputText)
-    const requestReferenceImages = repair ? [] : referenceImageDataUrls
+    const requestReferenceImages = repair || stage?.categoryRepair ? [] : referenceImageDataUrls
     const requestSchema = stage?.schema ?? schema
     const requestInstructions = stage?.instructions ?? buildPlannerInstructions(options.baseDraft, mode, aPlusType, {
       textOnlyReferenceGuard: isDeepSeekPlannerProfile,
@@ -1980,7 +2100,12 @@ export async function callAmazonPlannerApi(options: {
   if (mode === 'etsy' && etsyShotGroup === 'original') {
     return callBatchedEtsyPlanner({
       baseDraft: options.baseDraft,
-      inputText,
+      buildInputText: (slots) => buildPlannerInputText(options.listingText, mode, aPlusType, {
+        includeReferenceImageInstruction: !isDeepSeekPlannerProfile,
+        userProductFacts: buildUserProductFactsText(options.baseDraft),
+        etsySlots: slots,
+        etsyCampaignContext: options.etsyCampaignContext,
+      }),
       textOnlyReferenceGuard: isDeepSeekPlannerProfile,
       marketplaceId,
       fallbackTitle,

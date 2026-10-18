@@ -687,7 +687,7 @@ describe('callAmazonPlannerApi', () => {
     const fetchMock = vi.fn().mockImplementation((_url, init) => {
       const body = JSON.parse(String(init.body))
       const systemPrompt = body.messages[0].content as string
-      const match = systemPrompt.match(/imagePlans must contain exactly these slots in order: (E\d+(?:, E\d+)*)\./)
+      const match = systemPrompt.match(/imagePlans must contain exactly 5 items in this order: (E\d+(?:, E\d+)*)\./)
       const batchSlots = match?.[1].split(', ') ?? []
       return chatResponse({ ...fullPayload, imagePlans: fullPayload.imagePlans.filter((plan) => batchSlots.includes(plan.slot)) })
     })
@@ -714,7 +714,236 @@ describe('callAmazonPlannerApi', () => {
       expect(request.messages[0].content).toContain('photographyDecision must include productSuitability')
       expect(request.messages[0].content).toContain('one concise Simplified Chinese UI sentence')
       expect(request.messages[1].content).toContain('Keep the complete English generation prompt')
+      expect(request.messages[1].content).toContain('exactly 5 shots:')
+      expect(request.messages[1].content).not.toContain('exactly 10 shots:')
+      expect(request.messages[0].content).toContain('visualDna must include productNameType')
+      expect(request.messages[0].content).toContain('photographyAnalysis must include materialBehavior')
+      for (const [field, values] of Object.entries({
+        angleFamily: TEST_ANGLE_FAMILIES,
+        shotScale: TEST_SHOT_SCALES,
+        lensClass: TEST_LENS_CLASSES,
+        lightingFamily: TEST_LIGHTING_FAMILIES,
+        sceneFamily: TEST_SCENE_FAMILIES,
+      })) {
+        expect(request.messages[0].content).toContain(`${field} MUST be exactly one of:`)
+        for (const value of values) expect(request.messages[0].content).toContain(value)
+      }
     }
+  })
+
+  it.each(['chat', 'responses'] as const)('repairs all five category fields without rewriting original-ten photographs through %s', async (apiMode) => {
+    const fullPayload = createEtsyPayload()
+    fullPayload.imagePlans[0]!.photographyDecision.shotScale = 'full-product'
+    fullPayload.imagePlans[0]!.photographyDecision.framing = 'Complete product occupies 75% of the frame without cropping.'
+    const fields = ['shotScale', 'angleFamily', 'lensClass', 'lightingFamily', 'sceneFamily'] as const
+    const invalidValues = ['hero', 'bespoke-angle', 'portrait-prime', 'bespoke-softbox', 'artisan-room']
+    const corrections = Object.fromEntries(fields.map((field, index) => [fullPayload.imagePlans[index]!.slot, {
+      [field]: fullPayload.imagePlans[index]!.photographyDecision[field],
+    }]))
+    const response = (payload: unknown) => new Response(JSON.stringify(apiMode === 'chat'
+      ? { choices: [{ message: { content: JSON.stringify(payload) }, finish_reason: 'stop' }] }
+      : { output_text: JSON.stringify(payload) }), { headers: { 'Content-Type': 'application/json' } })
+    let batch = 0
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      const body = JSON.parse(String(init.body))
+      const instructions = apiMode === 'chat' ? body.messages[0].content : body.instructions
+      if (instructions.includes('Classify the existing photographs')) return response({ categoryCorrections: corrections })
+      const start = batch++ * 5
+      return response({
+        ...fullPayload,
+        imagePlans: fullPayload.imagePlans.slice(start, start + 5).map((plan, index) => start === 0
+          ? { ...plan, photographyDecision: { ...plan.photographyDecision, [fields[index]!]: invalidValues[index] } }
+          : plan),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug.',
+      baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy',
+      etsyShotGroup: 'original',
+      referenceImageDataUrls: ['data:image/jpeg;base64,reference'],
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode }),
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(result.plans.map((plan) => plan.photographyDecision)).toEqual(fullPayload.imagePlans.slice(0, 10).map((plan) => plan.photographyDecision))
+    for (const [index, plan] of result.plans.entries()) {
+      expect(plan.prompt).toBe(fullPayload.imagePlans[index]!.prompt)
+      expect(plan.negativePrompt).toBe(fullPayload.imagePlans[index]!.negativePrompt)
+      expect(plan.planMarkdown).toBe(fullPayload.imagePlans[index]!.planMarkdown)
+    }
+    const repairBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
+    const repairInput = apiMode === 'chat' ? repairBody.messages[1].content : repairBody.input[0].content[0].text
+    const repairInstructions = apiMode === 'chat' ? repairBody.messages[0].content : repairBody.instructions
+    expect(repairInstructions).toContain('A shot role such as hero is not a shot scale')
+    expect(repairInstructions).toContain('Never change valid categories or photographic content to manufacture diversity')
+    const shots = JSON.parse(repairInput).shots
+    expect(shots).toHaveLength(5)
+    expect(shots[0].invalidFields).toEqual(['shotScale'])
+    expect(shots[0].photographyDecision.shotScale).toBe('hero')
+    expect(shots[0].photographyDecision.framing).toContain('75%')
+    expect(JSON.stringify(repairBody)).not.toContain('data:image')
+    if (apiMode === 'responses') {
+      expect(repairBody.text.format.schema.properties.categoryCorrections.properties.E01.required).toEqual(['shotScale'])
+      expect(repairBody.text.format.schema.properties.categoryCorrections.properties.E01.properties.shotScale.enum).toEqual(TEST_SHOT_SCALES)
+      const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+      expect(firstBody.input[0].content[0].text).toContain('exactly 5 shots: E01, E02, E03, E04, E05')
+      expect(firstBody.input[0].content[0].text).not.toContain('exactly 10 shots:')
+    }
+  })
+
+  it('repairs multiple invalid categories in the second half without re-requesting the successful first half', async () => {
+    const fullPayload = createEtsyPayload()
+    const response = (payload: unknown) => new Response(JSON.stringify({ output_text: JSON.stringify(payload) }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ ...fullPayload, imagePlans: fullPayload.imagePlans.slice(0, 5) }))
+      .mockResolvedValueOnce(response({ ...fullPayload, imagePlans: fullPayload.imagePlans.slice(5, 10).map((plan, index) => index === 0
+        ? { ...plan, photographyDecision: { ...plan.photographyDecision, shotScale: 'hero', lensClass: 'bespoke-lens' } }
+        : plan) }))
+      .mockResolvedValueOnce(response({ categoryCorrections: { E06: {
+        shotScale: fullPayload.imagePlans[5]!.photographyDecision.shotScale,
+        lensClass: fullPayload.imagePlans[5]!.photographyDecision.lensClass,
+      } } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown ceramic mug.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy', etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' }),
+    })
+    expect(result.plans.map((plan) => plan.photographyDecision)).toEqual(fullPayload.imagePlans.slice(0, 10).map((plan) => plan.photographyDecision))
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    const repairBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
+    expect(repairBody.text.format.schema.properties.categoryCorrections.required).toEqual(['E06'])
+    expect(repairBody.text.format.schema.properties.categoryCorrections.properties.E06.required).toEqual(['shotScale', 'lensClass'])
+  })
+
+  it.each([
+    { E01: { shotScale: 'hero' } },
+    { E02: { shotScale: 'full-product' } },
+    { E01: { shotScale: 'full-product', prompt: 'rewrite' } },
+    { E01: { shotScale: 'full-product', angleFamily: 'top-down' } },
+  ])('rejects incomplete or unsafe category-only corrections: %j', async (categoryCorrections) => {
+    const fullPayload = createEtsyPayload()
+    const response = (payload: unknown) => new Response(JSON.stringify({ output_text: JSON.stringify(payload) }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ ...fullPayload, imagePlans: fullPayload.imagePlans.slice(0, 5).map((plan, index) => index === 0
+        ? { ...plan, photographyDecision: { ...plan.photographyDecision, shotScale: 'hero' } } : plan) }))
+      .mockImplementation(() => response({ categoryCorrections }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(callAmazonPlannerApi({
+      listingText: 'Hand-thrown ceramic mug.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy', etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' }),
+    })).rejects.toThrow(/分类校正/)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('retries malformed classification JSON with a small correction request instead of a new full plan', async () => {
+    const fullPayload = createEtsyPayload()
+    const response = (payload: unknown) => new Response(JSON.stringify({ output_text: JSON.stringify(payload) }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ ...fullPayload, imagePlans: fullPayload.imagePlans.slice(0, 5).map((plan, index) => index === 0
+        ? { ...plan, photographyDecision: { ...plan.photographyDecision, shotScale: 'hero' } } : plan) }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ output_text: '{invalid' }), { headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(response({ categoryCorrections: { E01: { shotScale: fullPayload.imagePlans[0]!.photographyDecision.shotScale } } }))
+      .mockResolvedValueOnce(response({ ...fullPayload, imagePlans: fullPayload.imagePlans.slice(5, 10) }))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown ceramic mug.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy', etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' }),
+    })
+    expect(result.plans).toHaveLength(10)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    const retry = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
+    expect(retry.instructions).toContain('Classify the existing photographs')
+    expect(retry.input[0].content[0].text).toContain('Previous correction output: {invalid')
+    expect(retry.text.format.schema.properties).not.toHaveProperty('imagePlans')
+  })
+
+  it('preserves original-ten structural repair when the first payload is null', async () => {
+    const fullPayload = createEtsyPayload()
+    const response = (payload: unknown) => new Response(JSON.stringify({ output_text: JSON.stringify(payload) }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response(null))
+      .mockResolvedValueOnce(response({ ...fullPayload, imagePlans: fullPayload.imagePlans.slice(0, 5) }))
+      .mockResolvedValueOnce(response({ ...fullPayload, imagePlans: fullPayload.imagePlans.slice(5, 10) }))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown ceramic mug.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy', etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' }),
+    })
+    expect(result.plans).toHaveLength(10)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('stops classification and does not start the remaining half after cancellation', async () => {
+    const fullPayload = createEtsyPayload()
+    const controller = new AbortController()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ output_text: JSON.stringify({
+        ...fullPayload, imagePlans: fullPayload.imagePlans.slice(0, 5).map((plan, index) => index === 0
+          ? { ...plan, photographyDecision: { ...plan.photographyDecision, shotScale: 'hero' } } : plan),
+      }) }), { headers: { 'Content-Type': 'application/json' } }))
+      .mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true })
+        controller.abort(new DOMException('User stopped planning', 'AbortError'))
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(callAmazonPlannerApi({
+      listingText: 'Hand-thrown ceramic mug.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy', etsyShotGroup: 'original', signal: controller.signal,
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' }),
+    })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not bypass photograph diversity checks when categories are valid', async () => {
+    const fullPayload = createEtsyPayload()
+    const repeated = { ...fullPayload, imagePlans: fullPayload.imagePlans.slice(0, 5).map((plan) => ({
+      ...plan, photographyDecision: fullPayload.imagePlans[0]!.photographyDecision,
+    })) }
+    const fetchMock = vi.fn().mockImplementation(() => new Response(JSON.stringify({ output_text: JSON.stringify(repeated) }), {
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(callAmazonPlannerApi({
+      listingText: 'Hand-thrown ceramic mug.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy', etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' }),
+    })).rejects.toThrow('差异检查')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).input[0].content[0].text).toContain('差异检查')
+  })
+
+  it('propagates rate limits during classification without regenerating the whole batch', async () => {
+    const fullPayload = createEtsyPayload()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ output_text: JSON.stringify({
+        ...fullPayload, imagePlans: fullPayload.imagePlans.slice(0, 5).map((plan, index) => index === 0
+          ? { ...plan, photographyDecision: { ...plan.photographyDecision, shotScale: 'hero' } } : plan),
+      }) }), { headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: 'upstream rate limit' } }), {
+        status: 429, headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(callAmazonPlannerApi({
+      listingText: 'Hand-thrown ceramic mug.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy', etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' }),
+    })).rejects.toThrow('HTTP 429')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('repairs only the requested Etsy group when combined campaign diversity fails', async () => {
