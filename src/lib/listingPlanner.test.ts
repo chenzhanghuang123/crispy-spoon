@@ -515,6 +515,23 @@ function createEtsyPayload() {
   }
 }
 
+function createEtsyOutlinePayload(payload: ReturnType<typeof createEtsyPayload>, slots: string[]) {
+  const { imagePlans, ...campaign } = payload
+  return {
+    ...campaign,
+    shotOutline: imagePlans.filter((plan) => slots.includes(plan.slot)).map((plan) => ({
+      slot: plan.slot,
+      label: plan.label,
+      concept: `Distinct product-specific shot concept for ${plan.slot}.`,
+      angleFamily: plan.photographyDecision.angleFamily,
+      shotScale: plan.photographyDecision.shotScale,
+      lensClass: plan.photographyDecision.lensClass,
+      lightingFamily: plan.photographyDecision.lightingFamily,
+      sceneFamily: plan.photographyDecision.sceneFamily,
+    })),
+  }
+}
+
 function createPlannerStreamResponse(events: Record<string, unknown>[], contentType = 'text/event-stream') {
   const data = new TextEncoder().encode([
     ': keep-alive',
@@ -535,11 +552,18 @@ function createPlannerStreamResponse(events: Record<string, unknown>[], contentT
 describe('callAmazonPlannerApi', () => {
   it('plans Etsy original ten and additional five separately without replacing the first group', async () => {
     const fullPayload = createEtsyPayload()
-    const originalPayload = { ...fullPayload, imagePlans: fullPayload.imagePlans.slice(0, ETSY_ORIGINAL_SHOT_COUNT) }
     const additionalPayload = { ...fullPayload, imagePlans: fullPayload.imagePlans.slice(ETSY_ORIGINAL_SHOT_COUNT) }
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ output_text: JSON.stringify(originalPayload) }), { headers: { 'Content-Type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ output_text: JSON.stringify(additionalPayload) }), { headers: { 'Content-Type': 'application/json' } }))
+    const originalSlots = getEtsyImageSlots().slice(0, ETSY_ORIGINAL_SHOT_COUNT)
+    const response = (payload: unknown) => new Response(JSON.stringify({ output_text: JSON.stringify(payload) }), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      const body = JSON.parse(String(init.body))
+      const properties = body.text.format.schema.properties
+      if (properties.shotOutline) return response(createEtsyOutlinePayload(fullPayload, originalSlots))
+      const requestedSlots = properties.imagePlans.items.properties.slot.enum as string[]
+      return response({ imagePlans: fullPayload.imagePlans.filter((plan) => requestedSlots.includes(plan.slot)) })
+    })
     vi.stubGlobal('fetch', fetchMock)
     const profile = createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' })
     const common = {
@@ -547,6 +571,7 @@ describe('callAmazonPlannerApi', () => {
       baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
       mode: 'etsy' as const,
       profile,
+      referenceImageDataUrls: ['data:image/jpeg;base64,reference'],
     }
 
     const original = await callAmazonPlannerApi({ ...common, etsyShotGroup: 'original' })
@@ -560,39 +585,47 @@ describe('callAmazonPlannerApi', () => {
       },
     })
     const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
-    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
     expect(firstBody.stream).toBe(false)
-    expect(firstBody.text.format.schema.properties.imagePlans.minItems).toBe(10)
-    expect(firstBody.text.format.schema.properties.imagePlans.maxItems).toBe(10)
+    expect(firstBody.text.format.schema.properties.shotOutline.minItems).toBe(10)
+    expect(firstBody.text.format.schema.properties.shotOutline.maxItems).toBe(10)
     expect(firstBody.instructions).toContain('E01, E02, E03, E04, E05, E06, E07, E08, E09, E10')
     expect(firstBody.instructions).toContain('ORIGINAL TEN — WORLD-CLASS CREATIVE DIRECTION')
-    expect(firstBody.instructions).toContain('Build a product-specific E01-E10 sequence of complementary selling jobs')
+    expect(firstBody.instructions).toContain('ten complementary selling jobs tailored to this product')
     expect(firstBody.instructions).toContain('ORIGINAL TEN — PRODUCT IDENTITY PRIORITY')
-    expect(firstBody.instructions).toContain('so product truth wins')
-    expect(firstBody.instructions).toContain('ORIGINAL TEN — MASTER-LEVEL MATERIAL LIGHTING')
-    expect(firstBody.instructions).toContain('ORIGINAL TEN — PURPOSE-CHOSEN TOP-TIER EQUIPMENT')
+    expect(firstBody.instructions).toContain('Priority: product truth')
     expect(firstBody.instructions).not.toContain('E11 — 吸睛首页图')
     expect(firstBody.instructions).not.toContain('ADDITIONAL FIVE — EXACT PRODUCT TWIN')
-    expect(secondBody.stream).toBe(false)
-    expect(secondBody.text.format.schema.properties.imagePlans.minItems).toBe(5)
-    expect(secondBody.text.format.schema.properties.imagePlans.maxItems).toBe(5)
-    expect(secondBody.instructions).toContain('E11, E12, E13, E14, E15')
-    expect(secondBody.instructions).toContain('E12 — 形态与结构图')
-    expect(secondBody.instructions).toContain('E13 — 真实使用场景图')
-    expect(secondBody.instructions).toContain('E14 — 材质与工艺特写')
-    expect(secondBody.instructions).toContain('E15 — 品牌氛围生活方式图')
-    expect(secondBody.instructions).toContain('ADDITIONAL FIVE — EXACT PRODUCT TWIN')
-    expect(secondBody.instructions).not.toContain('ORIGINAL TEN — WORLD-CLASS CREATIVE DIRECTION')
-    expect(secondBody.instructions).toContain('five separate square 1:1 photographs')
-    expect(secondBody.instructions).toContain('do not infer unseen backs, bottoms, interiors')
-    expect(secondBody.input[0].content[0].text).toContain('Locked Visual DNA and photography analysis')
+    const batchBodies = fetchMock.mock.calls.slice(1, 5).map((call) => JSON.parse(String(call[1]?.body)))
+    const batchSizes = batchBodies.map((body) => body.text.format.schema.properties.imagePlans.items.properties.slot.enum.length)
+    expect(batchSizes).toEqual([3, 3, 3, 1])
+    for (const body of batchBodies) {
+      expect(body.instructions).toContain('ORIGINAL TEN — LOCKED ART DIRECTION')
+      expect(body.instructions).toContain('one concise Simplified Chinese UI sentence')
+      expect(body.text.format.schema.properties.imagePlans.items.properties.planMarkdown.maxLength).toBe(120)
+      expect(body.input[0].content).toContainEqual({ type: 'input_image', image_url: 'data:image/jpeg;base64,reference' })
+      expect(body.input[0].content[0].text).toContain('all 15 photographyDecision fields detailed')
+    }
+    const additionalBody = JSON.parse(String(fetchMock.mock.calls[5]?.[1]?.body))
+    expect(additionalBody.stream).toBe(false)
+    expect(additionalBody.text.format.schema.properties.imagePlans.minItems).toBe(5)
+    expect(additionalBody.text.format.schema.properties.imagePlans.maxItems).toBe(5)
+    expect(additionalBody.instructions).toContain('E11, E12, E13, E14, E15')
+    expect(additionalBody.instructions).toContain('E12 — 形态与结构图')
+    expect(additionalBody.instructions).toContain('E13 — 真实使用场景图')
+    expect(additionalBody.instructions).toContain('E14 — 材质与工艺特写')
+    expect(additionalBody.instructions).toContain('E15 — 品牌氛围生活方式图')
+    expect(additionalBody.instructions).toContain('ADDITIONAL FIVE — EXACT PRODUCT TWIN')
+    expect(additionalBody.instructions).not.toContain('ORIGINAL TEN — WORLD-CLASS CREATIVE DIRECTION')
+    expect(additionalBody.instructions).toContain('five separate square 1:1 photographs')
+    expect(additionalBody.instructions).toContain('do not infer unseen backs, bottoms, interiors')
+    expect(additionalBody.input[0].content[0].text).toContain('Locked Visual DNA and photography analysis')
     expect(original.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(0, 10))
     expect(additional.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(10))
     const merged = mergeEtsyShotGroups(original.plans, additional.plans)
     expect(merged.map((plan) => plan.slot)).toEqual(getEtsyImageSlots())
     expect(merged.slice(0, 10).map((plan) => plan.prompt)).toEqual(original.plans.map((plan) => plan.prompt))
     expect(merged[10]?.planMarkdown).toContain('新增固定镜头要求')
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(6)
   })
 
   it('requests only five Etsy slots through Chat Completions', async () => {
@@ -617,9 +650,49 @@ describe('callAmazonPlannerApi', () => {
     expect(result.plans[0]?.slot).toBe('E11')
   })
 
+  it('splits original-ten Chat Completions into a locked outline and compact shot batches', async () => {
+    const fullPayload = createEtsyPayload()
+    const slots = getEtsyImageSlots().slice(0, ETSY_ORIGINAL_SHOT_COUNT)
+    const chatResponse = (payload: unknown) => new Response(JSON.stringify({
+      choices: [{ message: { role: 'assistant', content: JSON.stringify(payload) }, finish_reason: 'stop' }],
+    }), { headers: { 'Content-Type': 'application/json' } })
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      const body = JSON.parse(String(init.body))
+      const systemPrompt = body.messages[0].content as string
+      if (systemPrompt.includes('shotOutline must contain exactly these slots')) {
+        return chatResponse(createEtsyOutlinePayload(fullPayload, slots))
+      }
+      const input = body.messages[1].content as string
+      const match = input.match(/Expand only (E\d+(?:, E\d+)*)\./)
+      const batchSlots = match?.[1].split(', ') ?? []
+      return chatResponse({ imagePlans: fullPayload.imagePlans.filter((plan) => batchSlots.includes(plan.slot)) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug with speckled stoneware and a raw clay foot.',
+      baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
+      mode: 'etsy',
+      etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'chat' }),
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(result.etsyShotGroup).toBe('original')
+    expect(result.plans.map((plan) => plan.slot)).toEqual(slots)
+    expect(result.plans.map((plan) => plan.prompt)).toEqual(fullPayload.imagePlans.slice(0, ETSY_ORIGINAL_SHOT_COUNT).map((plan) => plan.prompt))
+    const requests = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)))
+    expect(requests[0].response_format).toEqual({ type: 'json_object' })
+    for (const request of requests.slice(1)) {
+      expect(request.messages[0].content).toContain('photographyDecision must include productSuitability')
+      expect(request.messages[0].content).toContain('one concise Simplified Chinese UI sentence')
+      expect(request.messages[1].content).toContain('Keep the complete English generation prompt')
+    }
+  })
+
   it('repairs only the requested Etsy group when combined campaign diversity fails', async () => {
     const fullPayload = createEtsyPayload()
-    const originalPayload = { ...fullPayload, imagePlans: fullPayload.imagePlans.slice(0, ETSY_ORIGINAL_SHOT_COUNT) }
+    const originalPlans = fullPayload.imagePlans.slice(0, ETSY_ORIGINAL_SHOT_COUNT)
     const invalidAdditionalPayload = {
       ...fullPayload,
       imagePlans: fullPayload.imagePlans.slice(ETSY_ORIGINAL_SHOT_COUNT).map((plan, index) => ({
@@ -632,7 +705,6 @@ describe('callAmazonPlannerApi', () => {
       headers: { 'Content-Type': 'application/json' },
     })
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(originalPayload))
       .mockResolvedValueOnce(jsonResponse(invalidAdditionalPayload))
       .mockResolvedValueOnce(jsonResponse(additionalPayload))
     vi.stubGlobal('fetch', fetchMock)
@@ -642,24 +714,22 @@ describe('callAmazonPlannerApi', () => {
       mode: 'etsy' as const,
       profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' as const }),
     }
-    const original = await callAmazonPlannerApi({ ...common, etsyShotGroup: 'original' })
-
     const additional = await callAmazonPlannerApi({
       ...common,
       etsyShotGroup: 'additional',
       etsyCampaignContext: {
-        visualDna: original.etsyVisualDna!,
-        photographyAnalysis: original.etsyPhotographyAnalysis!,
-        plans: original.plans,
+        visualDna: fullPayload.visualDna,
+        photographyAnalysis: fullPayload.photographyAnalysis,
+        plans: originalPlans,
       },
     })
-    const repairBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
+    const repairBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
 
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(repairBody.input[0].content[0].text).toContain('Locked existing campaign context')
     expect(repairBody.input[0].content[0].text).toContain('complete fifteen-shot campaign must have at least 5 angleFamily values')
     expect(additional.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(ETSY_ORIGINAL_SHOT_COUNT))
-    expect(mergeEtsyShotGroups(original.plans, additional.plans)).toHaveLength(ETSY_SHOT_COUNT)
+    expect(mergeEtsyShotGroups(originalPlans, additional.plans)).toHaveLength(ETSY_SHOT_COUNT)
   })
 
   it('does not retry an Etsy upstream 429 automatically', async () => {

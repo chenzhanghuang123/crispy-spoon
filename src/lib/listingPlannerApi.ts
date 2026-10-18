@@ -278,6 +278,8 @@ interface EtsyPlannerRequestStage {
   instructions: string
   inputText: string
   schema: object
+  slots: string[]
+  outline?: boolean
 }
 
 const ETSY_LENS_CLASS_ALIASES: Record<string, (typeof ETSY_LENS_CLASSES)[number]> = {
@@ -316,7 +318,31 @@ const ETSY_PHOTOGRAPHY_DECISION_SCHEMA = {
   required: ['productSuitability', 'angleFamily', 'angle', 'shotScale', 'framing', 'cameraSystem', 'lensClass', 'lens', 'exposure', 'focusStrategy', 'lightingFamily', 'lighting', 'sceneFamily', 'scene', 'differentiation'],
 } as const
 
-function createEtsyPlannerSchema(slots = getEtsyImageSlots()) {
+function createEtsyPhotographyDecisionSchema(concise = false) {
+  if (!concise) return ETSY_PHOTOGRAPHY_DECISION_SCHEMA
+  return {
+    ...ETSY_PHOTOGRAPHY_DECISION_SCHEMA,
+    properties: {
+      productSuitability: { type: 'string', description: 'Why this shot reveals verified product value.' },
+      angleFamily: ETSY_PHOTOGRAPHY_DECISION_SCHEMA.properties.angleFamily,
+      angle: { type: 'string', description: 'Exact camera viewpoint and perspective.' },
+      shotScale: ETSY_PHOTOGRAPHY_DECISION_SCHEMA.properties.shotScale,
+      framing: { type: 'string', description: 'Product occupancy, crop, orientation, and perspective.' },
+      cameraSystem: { type: 'string', description: 'Suitable flagship camera system for this shot.' },
+      lensClass: ETSY_PHOTOGRAPHY_DECISION_SCHEMA.properties.lensClass,
+      lens: { type: 'string', description: 'Lens and focal length or magnification suited to the shot.' },
+      exposure: { type: 'string', description: 'Aperture, shutter, ISO, support, and any needed optical aids.' },
+      focusStrategy: { type: 'string', description: 'Focus plane and depth-of-field or motion strategy.' },
+      lightingFamily: ETSY_PHOTOGRAPHY_DECISION_SCHEMA.properties.lightingFamily,
+      lighting: { type: 'string', description: 'Source, diffusion, fill, reflection control, color, and shadows.' },
+      sceneFamily: ETSY_PHOTOGRAPHY_DECISION_SCHEMA.properties.sceneFamily,
+      scene: { type: 'string', description: 'Believable product-specific setting, scale, and restrained props.' },
+      differentiation: { type: 'string', description: 'How this shot differs in purpose, view, scale, optics, light, and scene.' },
+    },
+  } as const
+}
+
+function createEtsyPlannerSchema(slots = getEtsyImageSlots(), options: { conciseSummary?: boolean } = {}) {
   return {
     type: 'object',
     additionalProperties: false,
@@ -325,10 +351,16 @@ function createEtsyPlannerSchema(slots = getEtsyImageSlots()) {
       sellingPoints: SELLING_POINTS_SCHEMA,
       visualDna: ETSY_VISUAL_DNA_SCHEMA,
       photographyAnalysis: ETSY_PHOTOGRAPHY_ANALYSIS_SCHEMA,
-      seriesStyleGuide: {
-        type: 'string',
-        description: 'English cross-shot consistency guide grounded only in the locked Visual DNA.',
-      },
+      seriesStyleGuide: options.conciseSummary
+        ? {
+          type: 'string',
+          maxLength: 220,
+          description: 'One concise English sentence for cross-shot product consistency; do not repeat Visual DNA facts.',
+        }
+        : {
+          type: 'string',
+          description: 'English cross-shot consistency guide grounded only in the locked Visual DNA.',
+        },
       imagePlans: {
         type: 'array',
         minItems: slots.length,
@@ -339,16 +371,28 @@ function createEtsyPlannerSchema(slots = getEtsyImageSlots()) {
           properties: {
             slot: { type: 'string', enum: slots },
             label: CHINESE_LABEL_SCHEMA,
-            planMarkdown: {
-              type: 'string',
-              description: 'Simplified Chinese shot strategy plus a product-specific creative scene description. State the shot role such as hero, macro detail, lifestyle context, or atmospheric creative.',
-            },
+            planMarkdown: options.conciseSummary
+              ? {
+                type: 'string',
+                maxLength: 120,
+                description: 'One concise Simplified Chinese UI summary stating the shot purpose and unique visual idea. Do not repeat production details.',
+              }
+              : {
+                type: 'string',
+                description: 'Simplified Chinese shot strategy plus a product-specific creative scene description. State the shot role such as hero, macro detail, lifestyle context, or atmospheric creative.',
+              },
             prompt: {
               type: 'string',
               description: 'Professional English image-generation prompt. Explicitly repeat the locked material, color, texture, finish, silhouette, proportions, and construction details in every shot. Do not use generic reusable scene templates.',
             },
-            negativePrompt: NEGATIVE_PROMPT_SCHEMA,
-            photographyDecision: ETSY_PHOTOGRAPHY_DECISION_SCHEMA,
+            negativePrompt: options.conciseSummary
+              ? {
+                type: 'string',
+                maxLength: 240,
+                description: 'Concise English exclusions for shot-specific risks only; shared product-identity and layout exclusions are appended by the application.',
+              }
+              : NEGATIVE_PROMPT_SCHEMA,
+            photographyDecision: createEtsyPhotographyDecisionSchema(options.conciseSummary),
           },
           required: ['slot', 'label', 'planMarkdown', 'prompt', 'negativePrompt', 'photographyDecision'],
         },
@@ -1146,34 +1190,35 @@ function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft, stage?: { ou
     "You are a 'World-Class Adaptive Art Director and AI Photographer' specifically tailored for Etsy sellers.",
     'Your mission is to curate a bespoke, commercially viable product photoshoot that elevates the seller brand while preserving the real product exactly.',
     'PHASE 1 — DEEP DIVE ANALYSIS & STRATEGIC PLANNING ONLY. Do not generate images in this response.',
-    stage?.slots && !isPartial
+    stage?.lockedCampaign
+      ? 'PART A: Use the supplied locked Visual DNA unchanged; do not reanalyze or repeat these fields.'
+      : stage?.slots && !isPartial
       ? 'PART A: Use the supplied locked Visual DNA; do not reanalyze, change, or repeat the campaign-level fields.'
-      : stage?.lockedCampaign
-        ? 'PART A: Use the supplied locked Visual DNA without changing the product identity. Repeat the four fields unchanged in this group’s JSON response.'
       : 'PART A: VISUAL DNA ANALYSIS. Analyze and return all four required fields: Product Name/Type; Material & Texture Focus; Color Palette & Lighting Mood; Brand Aesthetic & Target Audience.',
     'Visual DNA Lock is crucial: derive physical facts from the product description, user-provided facts, and reference images. Never invent or redesign material, color, texture, finish, silhouette, dimensions, construction, accessories, logo, text, or quantity.',
-    stage?.slots && !isPartial
+    stage?.lockedCampaign
+      ? 'PART B: Apply the supplied locked photography diagnosis and shot assignments unchanged; do not repeat the analysis fields.'
+      : stage?.slots && !isPartial
       ? 'PART B: PRODUCT-SPECIFIC PHOTOGRAPHY DIAGNOSIS. Apply the supplied locked material, form, detail, function, capture challenges, and campaign strategy to these shots.'
-      : stage?.lockedCampaign
-        ? 'PART B: Apply the supplied locked product photography diagnosis to these shots. Repeat the six analysis fields unchanged in this group’s JSON response.'
       : 'PART B: PRODUCT-SPECIFIC PHOTOGRAPHY DIAGNOSIS. Before designing any shot, return photographyAnalysis covering material light behavior, form and scale, critical details, verified function and interaction, capture challenges, and the campaign strategy. This diagnosis must explain what this particular product needs photographically; avoid generic luxury language.',
     stage?.outline
-      ? `PART C: Plan the complete ${ETSY_SHOT_COUNT}-shot campaign as a compact shotOutline in this order: ${slots.join(', ')}. For each shot return its slot, Chinese label, a one-sentence product-specific concept, and the five photography category IDs. Do not write prompts or detailed camera settings yet; a later request expands each shot without losing quality.`
+      ? `PART C: Plan exactly ${requestedSlots.length} shots as a compact shotOutline in this order: ${requestedSlots.join(', ')}. For each return its slot, Chinese label, one product-specific concept, and five photography category IDs. Do not write prompts or detailed camera settings yet; later batches expand every shot.`
       : stage?.slots
         ? isPartial
-          ? `PART C: Generate only these ${stage.slots.length} assigned shots: ${stage.slots.join(', ')}. Return exactly these imagePlans in this order. This is one half of a two-request Etsy campaign; do not add any other slots and do not use a generic fixed template.`
+          ? `PART C: Generate only these ${stage.slots.length} assigned shots: ${stage.slots.join(', ')}. Return exactly these imagePlans in this order as one batch of the locked campaign; do not add other slots or change their assigned concepts.`
           : `PART C: Expand only these ${stage.slots.length} assigned shots: ${stage.slots.join(', ')}. Return only imagePlans for these slots. Preserve their exact concepts and all five assigned category IDs from the full campaign outline; the other shots are produced separately.`
         : `PART C: THE DYNAMIC ${ETSY_SHOT_COUNT}-SHOT BESPOKE PLAN. Return exactly ${ETSY_SHOT_COUNT} shots in this slot order: ${slots.join(', ')}.`,
-    'Never use a reusable fixed scene template. Dynamically design every scene from this product’s Visual DNA, use case, craftsmanship, price positioning, gifting context, and likely Etsy buyer.',
+    isOriginalGroup ? '' : 'Never use a reusable fixed scene template. Dynamically design every scene from this product’s Visual DNA, use case, craftsmanship, price positioning, gifting context, and likely Etsy buyer.',
     !isAdditionalGroup ? `Preserve the original ${ETSY_ORIGINAL_SHOT_COUNT}-shot behavior for E01-E10: they must remain a strategic mix of hero/clean listing, macro/detail, lifestyle/in-situ, and atmospheric/creative images, with their exact order and concepts uniquely chosen for this product. Do not replace or compress these original ten shots.` : '',
-    isOriginalGroup ? [
-      'ORIGINAL TEN — WORLD-CLASS CREATIVE DIRECTION: Act as a leading product designer, commercial art director, still-life photographer, set designer, and lighting director. Study this exact product’s design language, silhouette, material behavior, craftsmanship, verified function, buyer, and purchase questions before assigning any shot. Build a product-specific E01-E10 sequence of complementary selling jobs; decide which combination best explains this product rather than following a fixed slot-to-shot template. A shot earns its place by revealing useful new product evidence, buyer context, or desire, not by merely changing the background.',
-      'ORIGINAL TEN — BESPOKE PREMIUM SCENES: For each shot, design the most fitting high-end physical scene from this product’s own character and real use environment. Specify coherent surfaces, spatial depth, scale, restrained supporting objects, and believable product contact. Prefer intentional, art-directed sets with strong visual hierarchy over generic luxury rooms, stock-photo props, decorative clutter, or one repeated tabletop. Every scene must make the product more desirable and immediately understandable to its Etsy buyer.',
-      'ORIGINAL TEN — PRODUCT IDENTITY PRIORITY: Resolve every creative decision in this order: (1) exact visible silhouette, proportions, thickness, component count, relative placement, color, and finish; (2) verified material behavior and construction; (3) physically credible support, use, perspective, and lighting; (4) composition, scene styling, and premium mood. If a high-end scene, dramatic light, shallow depth of field, camera angle, or styling conflicts with the source product, simplify or redesign the creative choice so product truth wins. Never crop out, occlude, distort, recolor, mirror, stretch, replace, or beautify away a defining feature; keep uncertain or unseen details neutral instead of inventing them.',
-      'ORIGINAL TEN — MASTER-LEVEL MATERIAL LIGHTING: For every shot, engineer a distinct professional lighting setup for the verified materials and photographic objective. Specify motivated key direction and apparent source size, diffusion, fill or negative-fill balance, flags and reflection control, highlight shape, shadow character, and consistent ambient color as relevant. Use premium studio craft to reveal real form, finish, texture, and color; never substitute dramatic glow, HDR, excessive contrast, or a fashionable color cast for accurate material rendering.',
-      'ORIGINAL TEN — PURPOSE-CHOSEN TOP-TIER EQUIPMENT: Select a credible flagship high-resolution camera system and the best professional lens category, focal length, working distance, aperture, shutter, ISO, support, and focus strategy for each individual shot. Match perspective and depth of field to the product geometry and selling task; use macro, tilt-shift, medium-format, or other specialist optics only when they solve a real capture need. Equipment choices are a professional capture target, not a claim of actual photography. Do not repeat one prestige camera, one lens, or one exposure recipe across all ten shots.',
-      'ORIGINAL TEN — SET-LEVEL QUALITY REVIEW: Compare all ten assigned viewpoints, shot scales, optics, lighting designs, scenes, and buyer purposes as one campaign. Remove redundant concepts and redesign any shot whose only difference is a prop or background. Keep the set visually cohesive through accurate product identity and considered craft, while allowing each product-specific shot to have its own optimal photographic treatment.',
-    ].join('\n') : '',
+    isOriginalGroup ? stage?.lockedCampaign
+      ? 'ORIGINAL TEN — LOCKED ART DIRECTION: Use the supplied product diagnosis and ten-shot outline unchanged. Expand assigned shots with distinct buyer value, bespoke believable scenes, material-accurate professional lighting, and purpose-chosen flagship camera/lens/exposure/focus decisions. Preserve exact product identity above styling; never invent or alter uncertain details. Follow the campaign-wide angle, scale, lens, lighting, and scene assignments.'
+      : [
+        'ORIGINAL TEN — WORLD-CLASS CREATIVE DIRECTION: Analyze this product’s design, materials, craft, verified use, buyer, and purchase questions. Create ten complementary selling jobs tailored to this product; every shot must add product evidence or buyer appeal, not just a new background.',
+        'ORIGINAL TEN — BESPOKE PREMIUM SCENES: Design physically credible, art-directed scenes for the product and real use. Specify fitting surfaces, depth, scale, restrained props, and believable contact; avoid generic luxury sets, stock-photo styling, clutter, and repeated tabletops.',
+        'ORIGINAL TEN — PRODUCT IDENTITY PRIORITY: Preserve the reference silhouette, proportions, thickness, parts and placement, color, finish, materials, and construction. Priority: product truth, verified material behavior, credible use/perspective/light, then composition and mood. If styling conflicts with the product, simplify it. Never crop, occlude, distort, recolor, mirror, stretch, replace, or beautify away defining features; keep unknown details neutral.',
+        'ORIGINAL TEN — MASTER-LEVEL LIGHTING AND EQUIPMENT: Design distinct material-aware commercial lighting per shot, specifying source direction/size, diffusion, fill or negative fill, reflection control, highlights, shadows, and ambient color. Select a credible flagship camera, lens, distance, aperture, shutter, ISO, support, and focus method for each geometry and selling task. Use specialist optics only when useful; equipment is a capture target, not an actual exposure claim.',
+        'ORIGINAL TEN — CAMPAIGN REVIEW: Compare all ten viewpoints, scales, optics, lighting, scenes, and buyer purposes. Redesign near-duplicates; keep product identity and visual craft cohesive while giving each shot a distinct useful role.',
+      ].join('\n') : '',
     includesAdditionalShots ? 'The five additional shots must serve five distinct, complementary roles after the original ten:' : '',
     ...(isPartial ? additionalBriefs : includesAdditionalShots ? ETSY_ADDITIONAL_SHOT_BRIEFS : []).map((brief) => `${brief.slot} — ${brief.label}: ${brief.planRequirement} Image objective: ${brief.promptRequirement}`),
     includesAdditionalShots ? [
@@ -1184,20 +1229,27 @@ function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft, stage?: { ou
     ].join('\n') : '',
     ...stage?.outline ? [] : [
       'For every requested item, imagePlans.prompt must contain only the product-specific scene concept, verified product attributes, and truthful use or selling context. Keep all camera, lens, exposure, focus, lighting, scene-category, and differentiation decisions inside photographyDecision so the application can assemble a clean production prompt.',
-      'For each imagePlans item, label the shot strategy clearly and write planMarkdown as: **[Shot Strategy]:** followed by a specific, creative scene description tailored exactly to this product.',
+       isOriginalGroup
+         ? 'For each imagePlans item, write planMarkdown as one concise Simplified Chinese UI sentence (max 120 characters): shot purpose plus its unique visual idea. Do not repeat prompt or camera/lighting details.'
+         : 'For each imagePlans item, label the shot strategy clearly and write planMarkdown as: **[Shot Strategy]:** followed by a specific, creative scene description tailored exactly to this product.',
       'Every imagePlans.prompt must explicitly repeat the locked physical attributes—material, real color, texture, finish, silhouette, proportions, construction, and included details—so the image model cannot redesign the product.',
       `For every requested shot, return a complete photographyDecision chosen from the product diagnosis: product suitability, angle family and exact viewpoint, shot scale and framing, top-tier real camera system, lens class and category-appropriate premium lens, aperture/shutter/ISO/support, focus strategy, lighting family and execution, scene family and execution, and an explicit difference from the other ${isPartial ? 'requested' : 'fourteen'} shots.`,
     ],
-    'Choose equipment because it solves the shot: examples may include Phase One IQ4 for technical detail, Hasselblad X2D for controlled product or lifestyle work, high-end macro optics for craftsmanship, tilt-shift optics for strict geometry, or a flagship fast camera for real motion. Do not force one camera, one 100mm lens, or one aperture across the campaign.',
-    isPartial
+    isOriginalGroup ? '' : 'Choose equipment because it solves the shot: examples may include Phase One IQ4 for technical detail, Hasselblad X2D for controlled product or lifestyle work, high-end macro optics for craftsmanship, tilt-shift optics for strict geometry, or a flagship fast camera for real motion. Do not force one camera, one 100mm lens, or one aperture across the campaign.',
+    isOriginalGroup && stage?.lockedCampaign
+      ? 'Follow the full campaign diversity assignments in the locked outline; preserve each requested slot’s five assigned category IDs.'
+      : isPartial
       ? `DIVERSITY MATRIX (mandatory for this request): across these ${requestedSlots.length} shots, use at least ${requestedSlots.length === ETSY_ORIGINAL_SHOT_COUNT ? 4 : 3} angleFamily values, 3 shotScale values, 3 lensClass values, 3 lightingFamily values, and 4 sceneFamily values. No two requested shots may share the same angleFamily + shotScale + lightingFamily + sceneFamily combination. When an existing campaign context is supplied, also avoid duplicating those existing shots.`
       : 'DIVERSITY MATRIX (mandatory): across E01-E15 use at least 5 angleFamily values, 4 shotScale values, 4 materially different lenses or focal lengths, 4 lightingFamily values, and 5 sceneFamily values. No two shots may share the same angleFamily + shotScale + lightingFamily + sceneFamily combination.',
-    'Use diverse views only when they reveal something useful about this product. Build a deliberate rhythm across front/orthographic, three-quarter, side/rear, top-down, low/high, macro, functional POV, and environmental views as appropriate; never rotate the product arbitrarily just to satisfy variety.',
-    'Each scene must differ in actual spatial logic, buyer context, and selling job. Renaming the same tabletop, background, or three-quarter composition does not count as diversity.',
-    'Material-aware lighting is mandatory: select diffusion, raking light, cross-polarization, black flags, transmitted backlight, edge separation, practical ambience, or daylight shaping according to the verified surface behavior. Preserve true color and physically plausible reflections.',
+    isOriginalGroup && stage?.lockedCampaign ? '' : 'Use diverse views only when they reveal something useful about this product. Build a deliberate rhythm across front/orthographic, three-quarter, side/rear, top-down, low/high, macro, functional POV, and environmental views as appropriate; never rotate the product arbitrarily just to satisfy variety.',
+    isOriginalGroup && stage?.lockedCampaign ? '' : 'Each scene must differ in actual spatial logic, buyer context, and selling job. Renaming the same tabletop, background, or three-quarter composition does not count as diversity.',
+    isOriginalGroup && stage?.lockedCampaign ? '' : 'Material-aware lighting is mandatory: select diffusion, raking light, cross-polarization, black flags, transmitted backlight, edge separation, practical ambience, or daylight shaping according to the verified surface behavior. Preserve true color and physically plausible reflections.',
+    isOriginalGroup ? 'For negativePrompt, include only concise shot-specific risks (maximum 240 characters); the app appends shared product-identity and layout exclusions.' : '',
     'Prompts and negative prompts must be in English. planMarkdown and UI labels should be concise Simplified Chinese.',
     'Keep scenes commercially useful for Etsy. Avoid marketplace badges, fake reviews, prices, coupons, sale stickers, watermarks, QR codes, and unsupported claims.',
-    stage?.slots && !isPartial ? '' : 'Return one seriesStyleGuide in English that reinforces only product consistency and a cohesive bespoke campaign derived from the Visual DNA.',
+    stage?.lockedCampaign ? '' : isOriginalGroup
+      ? 'Return one concise English seriesStyleGuide sentence about cross-shot product consistency; do not repeat Visual DNA facts.'
+      : 'Return one seriesStyleGuide in English that reinforces only product consistency and a cohesive bespoke campaign derived from the Visual DNA.',
     'Do not ask follow-up questions inside the JSON and do not output prose outside the JSON. The application will display the Phase 1 confirmation message after the plan.',
     baseDraft.category ? `Known category: ${baseDraft.category}` : '',
   ].filter(Boolean).join('\n')
@@ -1573,8 +1625,8 @@ function isBananaProPlanner(profile: ApiProfile): boolean {
   }
 }
 
-function createEtsyOutlineSchema() {
-  const { imagePlans: _imagePlans, ...campaignProperties } = createEtsyPlannerSchema().properties
+function createEtsyOutlineSchema(slots = getEtsyImageSlots(), options: { conciseSummary?: boolean } = {}) {
+  const { imagePlans: _imagePlans, ...campaignProperties } = createEtsyPlannerSchema(slots, options).properties
   return {
     type: 'object',
     additionalProperties: false,
@@ -1582,13 +1634,13 @@ function createEtsyOutlineSchema() {
       ...campaignProperties,
       shotOutline: {
         type: 'array',
-        minItems: ETSY_SHOT_COUNT,
-        maxItems: ETSY_SHOT_COUNT,
+          minItems: slots.length,
+          maxItems: slots.length,
         items: {
           type: 'object',
           additionalProperties: false,
           properties: {
-            slot: { type: 'string', enum: getEtsyImageSlots() },
+            slot: { type: 'string', enum: slots },
             label: CHINESE_LABEL_SCHEMA,
             concept: { type: 'string', description: 'One specific English sentence describing this shot and its distinct buyer purpose.' },
             ...ETSY_PHOTOGRAPHY_CATEGORY_SCHEMAS,
@@ -1601,15 +1653,15 @@ function createEtsyOutlineSchema() {
   }
 }
 
-function normalizeEtsyOutline(payload: PlannerApiPayload, fallbackTitle: string) {
+function normalizeEtsyOutline(payload: PlannerApiPayload, fallbackTitle: string, slots = getEtsyImageSlots()) {
   const parsed = normalizeParsedListing(payload, fallbackTitle)
   const visualDna = normalizeEtsyVisualDna(payload, parsed)
   const photographyAnalysis = normalizeEtsyPhotographyAnalysis(payload, visualDna)
   const rawOutline = payload.shotOutline
-  if (!Array.isArray(rawOutline) || rawOutline.length !== ETSY_SHOT_COUNT) {
-    throw new Error(`Etsy 总体策划必须包含 ${ETSY_SHOT_COUNT} 张镜头分配`)
+  if (!Array.isArray(rawOutline) || rawOutline.length !== slots.length) {
+    throw new Error(`Etsy 总体策划必须包含 ${slots.length} 张镜头分配`)
   }
-  const shotOutline: EtsyShotOutline[] = getEtsyImageSlots().map((slot) => {
+  const shotOutline: EtsyShotOutline[] = slots.map((slot) => {
     const shot = rawOutline.find((item) => item?.slot === slot)
     if (!shot || !normalizePlannerText(shot.concept) || !normalizePlannerText(shot.label)) {
       throw new Error(`Etsy 总体策划缺少 ${slot} 的镜头概念`)
@@ -1645,6 +1697,8 @@ async function callBatchedEtsyPlanner(options: {
   textOnlyReferenceGuard: boolean
   marketplaceId: AmazonMarketplaceId
   fallbackTitle: string
+  slots: string[]
+  shotGroup: EtsyShotGroup
   signal?: AbortSignal
   onProgress?: (message: string) => void
   request: (stage: EtsyPlannerRequestStage, signal: AbortSignal) => Promise<PlannerResponseTextResult>
@@ -1695,38 +1749,41 @@ async function callBatchedEtsyPlanner(options: {
   }
 
   try {
-    options.onProgress?.('正在分析产品并统筹 15 张镜头')
+    const slots = options.slots
+    options.onProgress?.(`正在分析产品并统筹 ${slots.length} 张镜头`)
     const outline = await runStage({
       name: '总体策划',
-      schema: createEtsyOutlineSchema(),
-      instructions: [buildEtsyPlannerInstructions(options.baseDraft, { outline: true }), options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : ''].filter(Boolean).join('\n'),
+      slots,
+      outline: true,
+      schema: createEtsyOutlineSchema(slots, { conciseSummary: options.shotGroup === 'original' }),
+      instructions: [buildEtsyPlannerInstructions(options.baseDraft, { outline: true, slots, partial: true }), options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : ''].filter(Boolean).join('\n'),
       inputText: options.inputText,
-    }, (payload) => normalizeEtsyOutline(payload, options.fallbackTitle))
-    // Lock the full campaign before expanding small batches so parallel shots cannot converge on the same composition.
-    const batches = Array.from({ length: Math.ceil(ETSY_SHOT_COUNT / 3) }, (_, index) => outline.shotOutline.slice(index * 3, index * 3 + 3))
+    }, (payload) => normalizeEtsyOutline(payload, options.fallbackTitle, slots))
+    const batches = Array.from({ length: Math.ceil(slots.length / 3) }, (_, index) => outline.shotOutline.slice(index * 3, index * 3 + 3))
     const results: AmazonImagePlan[][] = new Array(batches.length)
     let nextBatch = 0
     let completedShots = 0
-    options.onProgress?.(`正在细化摄影方案：0/${ETSY_SHOT_COUNT}`)
+    options.onProgress?.(`正在细化摄影方案：0/${slots.length}`)
     const workers = Array.from({ length: 2 }, async () => {
       while (nextBatch < batches.length) {
         controller.signal.throwIfAborted()
         const index = nextBatch++
         const batch = batches[index]!
-        const slots = batch.map((shot) => shot.slot)
-        const batchSchema = createEtsyPlannerSchema(slots)
+        const batchSlots = batch.map((shot) => shot.slot)
+        const batchSchema = createEtsyPlannerSchema(batchSlots, { conciseSummary: options.shotGroup === 'original' })
         results[index] = await runStage({
-          name: `镜头 ${slots.join('/')}`,
+          name: `镜头 ${batchSlots.join('/')}`,
+          slots: batchSlots,
           schema: { type: 'object', additionalProperties: false, properties: { imagePlans: batchSchema.properties.imagePlans }, required: ['imagePlans'] },
-          instructions: [buildEtsyPlannerInstructions(options.baseDraft, { slots }), options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : ''].filter(Boolean).join('\n'),
+          instructions: [buildEtsyPlannerInstructions(options.baseDraft, { slots: batchSlots, partial: true, lockedCampaign: true }), options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : ''].filter(Boolean).join('\n'),
           inputText: [
             options.inputText,
             `Locked campaign shared by all batches: ${JSON.stringify(outline)}`,
-            `Expand only ${slots.join(', ')}. Preserve every assigned category, the exact product identity, and the distinctions from all other shots. Give these shots complete production-quality prompts and all 15 photographyDecision fields; never abbreviate their photographic detail.`,
+            `Expand only ${batchSlots.join(', ')}. Preserve each assigned category, exact product identity, and distinctions from all other shots. Keep the complete English generation prompt and all 15 photographyDecision fields detailed; keep only the Chinese UI summary and shot-specific negative exclusions concise.`,
           ].join('\n\n'),
         }, (payload) => normalizeEtsyShotBatch(payload, batch))
         completedShots += batch.length
-        options.onProgress?.(`正在细化摄影方案：${completedShots}/${ETSY_SHOT_COUNT}`)
+        options.onProgress?.(`正在细化摄影方案：${completedShots}/${slots.length}`)
       }
     })
     try {
@@ -1737,12 +1794,29 @@ async function callBatchedEtsyPlanner(options: {
       throw error
     }
     controller.signal.throwIfAborted()
-    options.onProgress?.('正在校验 15 张镜头的完整性与差异')
-    return normalizeEtsyPlannerApiPayload({ ...outline, imagePlans: results.flat() }, options.marketplaceId, options.fallbackTitle)
+    options.onProgress?.(`正在校验 ${slots.length} 张镜头的完整性与差异`)
+    const result = normalizeEtsyPlannerApiPayload({ ...outline, imagePlans: results.flat() }, options.marketplaceId, options.fallbackTitle, slots)
+    return { ...result, etsyShotGroup: options.shotGroup }
   } finally {
     options.signal?.removeEventListener('abort', abort)
     controller.abort()
   }
+}
+
+function buildChatEtsyStageGuide(stage: EtsyPlannerRequestStage): string {
+  if (stage.outline) {
+    return [
+      'Return valid JSON only with keys product, sellingPoints, visualDna, photographyAnalysis, seriesStyleGuide, and shotOutline.',
+      'shotOutline must contain exactly these slots in order: ' + stage.slots.join(', ') + '.',
+      'Each shotOutline item must include slot, label, concept, angleFamily, shotScale, lensClass, lightingFamily, and sceneFamily. Use only the allowed category IDs already listed in the instructions.',
+    ].join('\n')
+  }
+  return [
+    'Return valid JSON only with one top-level key: imagePlans.',
+    'imagePlans must contain exactly these slots in order: ' + stage.slots.join(', ') + '.',
+    'Each item must include slot, label, planMarkdown, prompt, negativePrompt, and photographyDecision.',
+    'photographyDecision must include productSuitability, angleFamily, angle, shotScale, framing, cameraSystem, lensClass, lens, exposure, focusStrategy, lightingFamily, lighting, sceneFamily, scene, and differentiation.',
+  ].join('\n')
 }
 
 export async function callAmazonPlannerApi(options: {
@@ -1772,7 +1846,7 @@ export async function callAmazonPlannerApi(options: {
   const aPlusModuleSpecs = normalizeAPlusModuleSpecs(aPlusType, options.aPlusModuleSpecs)
   const aPlusGenerationTier = options.aPlusGenerationTier ?? '2K'
   const schema = mode === 'etsy'
-    ? createEtsyPlannerSchema(etsySlots)
+    ? createEtsyPlannerSchema(etsySlots, { conciseSummary: etsyShotGroup === 'original' })
     : mode === 'aplus'
       ? createAPlusPlannerSchema(aPlusModuleSpecs, marketplaceId)
       : createListingPlannerSchema(listingImageCount, marketplaceId)
@@ -1792,18 +1866,32 @@ export async function callAmazonPlannerApi(options: {
   const referenceImageDataUrls = isDeepSeekPlannerProfile
     ? []
     : options.referenceImageDataUrls ?? []
-  const request = async (repair?: { previousOutput: string; errorMessage: string }) => {
-    const requestInputText = repair
+  const request = async (
+    repair?: { previousOutput: string; errorMessage: string },
+    stage?: EtsyPlannerRequestStage,
+    signal?: AbortSignal,
+  ) => {
+    const requestInputText = stage?.inputText ?? (repair
       ? buildEtsyPlannerRepairInput(repair.previousOutput, repair.errorMessage, etsySlots, options.etsyCampaignContext)
-      : inputText
+      : inputText)
     const requestReferenceImages = repair ? [] : referenceImageDataUrls
+    const requestSchema = stage?.schema ?? schema
+    const requestInstructions = stage?.instructions ?? buildPlannerInstructions(options.baseDraft, mode, aPlusType, {
+      textOnlyReferenceGuard: isDeepSeekPlannerProfile,
+      listingImageCount,
+      aPlusModuleSpecs,
+      marketplaceId,
+      etsySlots: etsyShotGroup ? etsySlots : undefined,
+      etsyPartial: Boolean(etsyShotGroup),
+      etsyLockedCampaign: Boolean(options.etsyCampaignContext),
+    })
     return fetch(
       useChatCompletions
         ? buildApiUrl(options.profile.baseUrl, 'chat/completions', proxyConfig, useApiProxy, { prefixV1: false })
         : buildApiUrl(options.profile.baseUrl, 'responses', proxyConfig, useApiProxy),
       {
         method: 'POST',
-        signal: options.signal,
+        signal: signal ?? options.signal,
         headers: {
           Authorization: `Bearer ${options.profile.apiKey}`,
           'Content-Type': 'application/json',
@@ -1815,15 +1903,17 @@ export async function callAmazonPlannerApi(options: {
               messages: [
                 {
                   role: 'system',
-                  content: buildChatPlannerSystemPrompt(options.baseDraft, mode, aPlusType, {
-                    textOnlyReferenceGuard: isDeepSeekPlannerProfile,
-                    listingImageCount,
-                    aPlusModuleSpecs,
-                    marketplaceId,
-                    etsySlots: etsyShotGroup ? etsySlots : undefined,
-                    etsyPartial: Boolean(etsyShotGroup),
-                    etsyLockedCampaign: Boolean(options.etsyCampaignContext),
-                  }),
+                  content: stage
+                    ? [requestInstructions, buildChatEtsyStageGuide(stage)].join('\n\n')
+                    : buildChatPlannerSystemPrompt(options.baseDraft, mode, aPlusType, {
+                      textOnlyReferenceGuard: isDeepSeekPlannerProfile,
+                      listingImageCount,
+                      aPlusModuleSpecs,
+                      marketplaceId,
+                      etsySlots: etsyShotGroup ? etsySlots : undefined,
+                      etsyPartial: Boolean(etsyShotGroup),
+                      etsyLockedCampaign: Boolean(options.etsyCampaignContext),
+                    }),
                 },
                 {
                   role: 'user',
@@ -1835,22 +1925,14 @@ export async function callAmazonPlannerApi(options: {
             }
           : {
               model,
-              instructions: buildPlannerInstructions(options.baseDraft, mode, aPlusType, {
-                textOnlyReferenceGuard: isDeepSeekPlannerProfile,
-                listingImageCount,
-                aPlusModuleSpecs,
-                marketplaceId,
-                etsySlots: etsyShotGroup ? etsySlots : undefined,
-                etsyPartial: Boolean(etsyShotGroup),
-                etsyLockedCampaign: Boolean(options.etsyCampaignContext),
-              }),
+              instructions: requestInstructions,
               input: buildResponsesPlannerInput(requestInputText, requestReferenceImages),
               text: {
                 format: {
                   type: 'json_schema',
                   name: mode === 'etsy' ? 'etsy_bespoke_photoshoot_plan' : mode === 'aplus' ? 'amazon_aplus_image_plan' : 'amazon_listing_image_plan',
                   strict: true,
-                  schema,
+                  schema: requestSchema,
                 },
               },
               stream: false,
@@ -1860,6 +1942,29 @@ export async function callAmazonPlannerApi(options: {
     )
   }
 
+  const fallbackTitle = options.baseDraft.productTitle || inferTitleFromListingText(options.listingText)
+  if (mode === 'etsy' && etsyShotGroup === 'original') {
+    return callBatchedEtsyPlanner({
+      baseDraft: options.baseDraft,
+      inputText,
+      textOnlyReferenceGuard: isDeepSeekPlannerProfile,
+      marketplaceId,
+      fallbackTitle,
+      slots: etsySlots,
+      shotGroup: etsyShotGroup,
+      signal: options.signal,
+      onProgress: options.onProgress,
+      request: async (stage, signal) => {
+        const stageResponse = await request(undefined, stage, signal)
+        if (!stageResponse.ok) {
+          const message = await getApiErrorMessage(stageResponse)
+          throw new Error(`HTTP ${stageResponse.status}: ${message}`)
+        }
+        return readPlannerResponseText(stageResponse, true)
+      },
+    })
+  }
+
   const response = await request()
 
   if (!response.ok) {
@@ -1867,7 +1972,6 @@ export async function callAmazonPlannerApi(options: {
     throw new Error(`HTTP ${response.status}: ${message}`)
   }
   const responseResult = await readPlannerResponseText(response, mode === 'etsy')
-  const fallbackTitle = options.baseDraft.productTitle || inferTitleFromListingText(options.listingText)
   if (mode === 'etsy') {
     const normalizeEtsyResult = (text: string): PlannerApiResult => {
       const result = normalizeEtsyPlannerApiPayload(parsePlannerPayload(text), marketplaceId, fallbackTitle, etsySlots)
