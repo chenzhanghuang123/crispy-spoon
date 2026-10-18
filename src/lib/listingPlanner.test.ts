@@ -560,9 +560,8 @@ describe('callAmazonPlannerApi', () => {
     const fetchMock = vi.fn().mockImplementation((_url, init) => {
       const body = JSON.parse(String(init.body))
       const properties = body.text.format.schema.properties
-      if (properties.shotOutline) return response(createEtsyOutlinePayload(fullPayload, originalSlots))
       const requestedSlots = properties.imagePlans.items.properties.slot.enum as string[]
-      return response({ imagePlans: fullPayload.imagePlans.filter((plan) => requestedSlots.includes(plan.slot)) })
+      return response({ ...fullPayload, imagePlans: fullPayload.imagePlans.filter((plan) => requestedSlots.includes(plan.slot)) })
     })
     vi.stubGlobal('fetch', fetchMock)
     const profile = createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' })
@@ -586,26 +585,24 @@ describe('callAmazonPlannerApi', () => {
     })
     const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
     expect(firstBody.stream).toBe(false)
-    expect(firstBody.text.format.schema.properties.shotOutline.minItems).toBe(10)
-    expect(firstBody.text.format.schema.properties.shotOutline.maxItems).toBe(10)
-    expect(firstBody.instructions).toContain('E01, E02, E03, E04, E05, E06, E07, E08, E09, E10')
+    expect(firstBody.text.format.schema.properties.imagePlans.minItems).toBe(5)
+    expect(firstBody.text.format.schema.properties.imagePlans.maxItems).toBe(5)
+    expect(firstBody.text.format.schema.properties.imagePlans.items.properties.slot.enum).toEqual(['E01', 'E02', 'E03', 'E04', 'E05'])
+    expect(firstBody.instructions).toContain('E01, E02, E03, E04, E05')
     expect(firstBody.instructions).toContain('ORIGINAL TEN — WORLD-CLASS CREATIVE DIRECTION')
-    expect(firstBody.instructions).toContain('ten complementary selling jobs tailored to this product')
+    expect(firstBody.instructions).toContain('Create 5 complementary selling jobs tailored to this product')
     expect(firstBody.instructions).toContain('ORIGINAL TEN — PRODUCT IDENTITY PRIORITY')
     expect(firstBody.instructions).toContain('Priority: product truth')
     expect(firstBody.instructions).not.toContain('E11 — 吸睛首页图')
     expect(firstBody.instructions).not.toContain('ADDITIONAL FIVE — EXACT PRODUCT TWIN')
-    const batchBodies = fetchMock.mock.calls.slice(1, 5).map((call) => JSON.parse(String(call[1]?.body)))
-    const batchSizes = batchBodies.map((body) => body.text.format.schema.properties.imagePlans.items.properties.slot.enum.length)
-    expect(batchSizes).toEqual([3, 3, 3, 1])
-    for (const body of batchBodies) {
-      expect(body.instructions).toContain('ORIGINAL TEN — LOCKED ART DIRECTION')
-      expect(body.instructions).toContain('one concise Simplified Chinese UI sentence')
-      expect(body.text.format.schema.properties.imagePlans.items.properties.planMarkdown.maxLength).toBe(120)
-      expect(body.input[0].content).toContainEqual({ type: 'input_image', image_url: 'data:image/jpeg;base64,reference' })
-      expect(body.input[0].content[0].text).toContain('all 15 photographyDecision fields detailed')
-    }
-    const additionalBody = JSON.parse(String(fetchMock.mock.calls[5]?.[1]?.body))
+    expect(firstBody.text.format.schema.properties.imagePlans.items.properties.planMarkdown.maxLength).toBe(120)
+    expect(firstBody.input[0].content).toContainEqual({ type: 'input_image', image_url: 'data:image/jpeg;base64,reference' })
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
+    expect(secondBody.text.format.schema.properties.imagePlans.items.properties.slot.enum).toEqual(['E06', 'E07', 'E08', 'E09', 'E10'])
+    expect(secondBody.input[0].content[0].text).toContain('First-half assignments')
+    expect(secondBody.input[0].content[0].text).toContain('Locked campaign diagnosis')
+    expect(secondBody.input[0].content).toContainEqual({ type: 'input_image', image_url: 'data:image/jpeg;base64,reference' })
+    const additionalBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
     expect(additionalBody.stream).toBe(false)
     expect(additionalBody.text.format.schema.properties.imagePlans.minItems).toBe(5)
     expect(additionalBody.text.format.schema.properties.imagePlans.maxItems).toBe(5)
@@ -625,7 +622,7 @@ describe('callAmazonPlannerApi', () => {
     expect(merged.map((plan) => plan.slot)).toEqual(getEtsyImageSlots())
     expect(merged.slice(0, 10).map((plan) => plan.prompt)).toEqual(original.plans.map((plan) => plan.prompt))
     expect(merged[10]?.planMarkdown).toContain('新增固定镜头要求')
-    expect(fetchMock).toHaveBeenCalledTimes(6)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it('normalizes common Etsy angle-family aliases from the planning model', async () => {
@@ -637,13 +634,13 @@ describe('callAmazonPlannerApi', () => {
     const fetchMock = vi.fn().mockImplementation((_url, init) => {
       const body = JSON.parse(String(init.body))
       const properties = body.text.format.schema.properties
-      if (properties.shotOutline) {
-        const outline = createEtsyOutlinePayload(fullPayload, slots)
-        outline.shotOutline[0]!.angleFamily = 'orthographic'
-        return response(outline)
-      }
       const requestedSlots = properties.imagePlans.items.properties.slot.enum as string[]
-      return response({ imagePlans: fullPayload.imagePlans.filter((plan) => requestedSlots.includes(plan.slot)) })
+      const plans = fullPayload.imagePlans
+        .filter((plan) => requestedSlots.includes(plan.slot))
+        .map((plan, index) => index === 0 && requestedSlots[0] === 'E01'
+          ? { ...plan, photographyDecision: { ...plan.photographyDecision, angleFamily: 'orthographic' } }
+          : plan)
+      return response({ ...fullPayload, imagePlans: plans })
     })
     vi.stubGlobal('fetch', fetchMock)
 
@@ -656,7 +653,7 @@ describe('callAmazonPlannerApi', () => {
     })
 
     expect(result.plans[0]?.photographyDecision?.angleFamily).toBe('front-orthographic')
-    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('requests only five Etsy slots through Chat Completions', async () => {
@@ -681,7 +678,7 @@ describe('callAmazonPlannerApi', () => {
     expect(result.plans[0]?.slot).toBe('E11')
   })
 
-  it('splits original-ten Chat Completions into a locked outline and compact shot batches', async () => {
+  it('splits original-ten Chat Completions into two complete five-shot plans', async () => {
     const fullPayload = createEtsyPayload()
     const slots = getEtsyImageSlots().slice(0, ETSY_ORIGINAL_SHOT_COUNT)
     const chatResponse = (payload: unknown) => new Response(JSON.stringify({
@@ -690,13 +687,9 @@ describe('callAmazonPlannerApi', () => {
     const fetchMock = vi.fn().mockImplementation((_url, init) => {
       const body = JSON.parse(String(init.body))
       const systemPrompt = body.messages[0].content as string
-      if (systemPrompt.includes('shotOutline must contain exactly these slots')) {
-        return chatResponse(createEtsyOutlinePayload(fullPayload, slots))
-      }
-      const input = body.messages[1].content as string
-      const match = input.match(/Expand only (E\d+(?:, E\d+)*)\./)
+      const match = systemPrompt.match(/imagePlans must contain exactly these slots in order: (E\d+(?:, E\d+)*)\./)
       const batchSlots = match?.[1].split(', ') ?? []
-      return chatResponse({ imagePlans: fullPayload.imagePlans.filter((plan) => batchSlots.includes(plan.slot)) })
+      return chatResponse({ ...fullPayload, imagePlans: fullPayload.imagePlans.filter((plan) => batchSlots.includes(plan.slot)) })
     })
     vi.stubGlobal('fetch', fetchMock)
 
@@ -708,13 +701,16 @@ describe('callAmazonPlannerApi', () => {
       profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'chat' }),
     })
 
-    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(result.etsyShotGroup).toBe('original')
     expect(result.plans.map((plan) => plan.slot)).toEqual(slots)
     expect(result.plans.map((plan) => plan.prompt)).toEqual(fullPayload.imagePlans.slice(0, ETSY_ORIGINAL_SHOT_COUNT).map((plan) => plan.prompt))
     const requests = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)))
     expect(requests[0].response_format).toEqual({ type: 'json_object' })
-    for (const request of requests.slice(1)) {
+    expect(requests[0].messages[0].content).toContain('E01, E02, E03, E04, E05')
+    expect(requests[1].messages[0].content).toContain('E06, E07, E08, E09, E10')
+    expect(requests[1].messages[1].content).toContain('First-half assignments')
+    for (const request of requests) {
       expect(request.messages[0].content).toContain('photographyDecision must include productSuitability')
       expect(request.messages[0].content).toContain('one concise Simplified Chinese UI sentence')
       expect(request.messages[1].content).toContain('Keep the complete English generation prompt')

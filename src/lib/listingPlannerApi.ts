@@ -280,6 +280,7 @@ interface EtsyPlannerRequestStage {
   schema: object
   slots: string[]
   outline?: boolean
+  fullPlan?: boolean
 }
 
 const ETSY_ANGLE_FAMILY_ALIASES: Record<string, (typeof ETSY_ANGLE_FAMILIES)[number]> = {
@@ -1241,7 +1242,7 @@ function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft, stage?: { ou
     isOriginalGroup ? stage?.lockedCampaign
       ? 'ORIGINAL TEN — LOCKED ART DIRECTION: Use the supplied product diagnosis and ten-shot outline unchanged. Expand assigned shots with distinct buyer value, bespoke believable scenes, material-accurate professional lighting, and purpose-chosen flagship camera/lens/exposure/focus decisions. Preserve exact product identity above styling; never invent or alter uncertain details. Follow the campaign-wide angle, scale, lens, lighting, and scene assignments.'
       : [
-        'ORIGINAL TEN — WORLD-CLASS CREATIVE DIRECTION: Analyze this product’s design, materials, craft, verified use, buyer, and purchase questions. Create ten complementary selling jobs tailored to this product; every shot must add product evidence or buyer appeal, not just a new background.',
+        `ORIGINAL TEN — WORLD-CLASS CREATIVE DIRECTION: Analyze this product’s design, materials, craft, verified use, buyer, and purchase questions. Create ${requestedSlots.length} complementary selling jobs tailored to this product; every shot must add product evidence or buyer appeal, not just a new background.`,
         'ORIGINAL TEN — BESPOKE PREMIUM SCENES: Design physically credible, art-directed scenes for the product and real use. Specify fitting surfaces, depth, scale, restrained props, and believable contact; avoid generic luxury sets, stock-photo styling, clutter, and repeated tabletops.',
         'ORIGINAL TEN — PRODUCT IDENTITY PRIORITY: Preserve the reference silhouette, proportions, thickness, parts and placement, color, finish, materials, and construction. Priority: product truth, verified material behavior, credible use/perspective/light, then composition and mood. If styling conflicts with the product, simplify it. Never crop, occlude, distort, recolor, mirror, stretch, replace, or beautify away defining features; keep unknown details neutral.',
         'ORIGINAL TEN — MASTER-LEVEL LIGHTING AND EQUIPMENT: Design distinct material-aware commercial lighting per shot, specifying source direction/size, diffusion, fill or negative fill, reflection control, highlights, shadows, and ambient color. Select a credible flagship camera, lens, distance, aperture, shutter, ISO, support, and focus method for each geometry and selling task. Use specialist optics only when useful; equipment is a capture target, not an actual exposure claim.',
@@ -1778,53 +1779,50 @@ async function callBatchedEtsyPlanner(options: {
 
   try {
     const slots = options.slots
-    options.onProgress?.(`正在分析产品并统筹 ${slots.length} 张镜头`)
-    const outline = await runStage({
-      name: '总体策划',
-      slots,
-      outline: true,
-      schema: createEtsyOutlineSchema(slots, { conciseSummary: options.shotGroup === 'original' }),
-      instructions: [buildEtsyPlannerInstructions(options.baseDraft, { outline: true, slots, partial: true }), options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : ''].filter(Boolean).join('\n'),
-      inputText: options.inputText,
-    }, (payload) => normalizeEtsyOutline(payload, options.fallbackTitle, slots))
-    const batches = Array.from({ length: Math.ceil(slots.length / 3) }, (_, index) => outline.shotOutline.slice(index * 3, index * 3 + 3))
-    const results: AmazonImagePlan[][] = new Array(batches.length)
-    let nextBatch = 0
-    let completedShots = 0
-    options.onProgress?.(`正在细化摄影方案：0/${slots.length}`)
-    const workers = Array.from({ length: 2 }, async () => {
-      while (nextBatch < batches.length) {
-        controller.signal.throwIfAborted()
-        const index = nextBatch++
-        const batch = batches[index]!
-        const batchSlots = batch.map((shot) => shot.slot)
-        const batchSchema = createEtsyPlannerSchema(batchSlots, { conciseSummary: options.shotGroup === 'original' })
-        results[index] = await runStage({
-          name: `镜头 ${batchSlots.join('/')}`,
-          slots: batchSlots,
-          schema: { type: 'object', additionalProperties: false, properties: { imagePlans: batchSchema.properties.imagePlans }, required: ['imagePlans'] },
-          instructions: [buildEtsyPlannerInstructions(options.baseDraft, { slots: batchSlots, partial: true, lockedCampaign: true }), options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : ''].filter(Boolean).join('\n'),
-          inputText: [
-            options.inputText,
-            `Locked campaign shared by all batches: ${JSON.stringify(outline)}`,
-            `Expand only ${batchSlots.join(', ')}. Preserve each assigned category, exact product identity, and distinctions from all other shots. Keep the complete English generation prompt and all 15 photographyDecision fields detailed; keep only the Chinese UI summary and shot-specific negative exclusions concise.`,
-          ].join('\n\n'),
-        }, (payload) => normalizeEtsyShotBatch(payload, batch))
-        completedShots += batch.length
-        options.onProgress?.(`正在细化摄影方案：${completedShots}/${slots.length}`)
-      }
-    })
-    try {
-      await Promise.all(workers)
-    } catch (error) {
-      controller.abort()
-      await Promise.allSettled(workers)
-      throw error
+    const groups = [slots.slice(0, 5), slots.slice(5)].filter((group) => group.length > 0)
+    const results: PlannerApiResult[] = []
+    options.onProgress?.(`正在分两组策划 ${slots.length} 张镜头：0/${slots.length}`)
+
+    for (const [groupIndex, group] of groups.entries()) {
+      controller.signal.throwIfAborted()
+      const groupLabel = groupIndex === 0 ? '第一组 5 张' : '第二组 5 张'
+      const previous = results[0]
+      const lockContext = previous
+        ? [
+          'The first five shots are already locked. Keep the exact product identity and campaign diagnosis, and create complementary assignments for the remaining five.',
+          `First-half assignments: ${JSON.stringify(previous.plans.map((plan) => ({ slot: plan.slot, label: plan.label, angleFamily: plan.photographyDecision?.angleFamily, shotScale: plan.photographyDecision?.shotScale, lensClass: plan.photographyDecision?.lensClass, lightingFamily: plan.photographyDecision?.lightingFamily, sceneFamily: plan.photographyDecision?.sceneFamily })))}`,
+          `Locked campaign diagnosis: ${JSON.stringify({ visualDna: previous.etsyVisualDna, photographyAnalysis: previous.etsyPhotographyAnalysis })}`,
+          'Do not repeat the first-half slots. Across the complete ten-shot campaign, avoid reusing the same angle, scale, lens, lighting, and scene combination unless the product truly requires it.',
+        ].join('\n')
+        : 'This is the first half of a ten-shot campaign. Establish strong product-specific variety so the second half can complement it.'
+      const productionOutputRule = 'Keep the complete English generation prompt and all 15 photographyDecision fields detailed; keep only the Chinese UI summary and shot-specific negative exclusions concise.'
+      const groupSchema = createEtsyPlannerSchema(group, { conciseSummary: true })
+      const result = await runStage({
+        name: groupLabel,
+        slots: group,
+        fullPlan: true,
+        schema: groupSchema,
+        instructions: [
+          buildEtsyPlannerInstructions(options.baseDraft, { slots: group, partial: true }),
+          options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : '',
+        ].filter(Boolean).join('\n'),
+        inputText: [options.inputText, lockContext, productionOutputRule].join('\n\n'),
+      }, (payload) => {
+        const normalized = normalizeEtsyPlannerApiPayload(payload, options.marketplaceId, options.fallbackTitle, group)
+        if (previous) assertEtsyPhotographyDiversity([...previous.plans, ...normalized.plans])
+        return normalized
+      })
+      results.push(result)
+      options.onProgress?.(`正在分两组策划 ${slots.length} 张镜头：${Math.min((groupIndex + 1) * 5, slots.length)}/${slots.length}`)
     }
+
     controller.signal.throwIfAborted()
+    const first = results[0]
+    if (!first) throw new Error('Etsy 原有 10 张策划未返回第一组结果')
+    const mergedPlans = results.flatMap((result) => result.plans)
+    assertEtsyPhotographyDiversity(mergedPlans)
     options.onProgress?.(`正在校验 ${slots.length} 张镜头的完整性与差异`)
-    const result = normalizeEtsyPlannerApiPayload({ ...outline, imagePlans: results.flat() }, options.marketplaceId, options.fallbackTitle, slots)
-    return { ...result, etsyShotGroup: options.shotGroup }
+    return { ...first, plans: mergedPlans, etsyShotGroup: options.shotGroup }
   } finally {
     options.signal?.removeEventListener('abort', abort)
     controller.abort()
@@ -1837,6 +1835,14 @@ function buildChatEtsyStageGuide(stage: EtsyPlannerRequestStage): string {
       'Return valid JSON only with keys product, sellingPoints, visualDna, photographyAnalysis, seriesStyleGuide, and shotOutline.',
       'shotOutline must contain exactly these slots in order: ' + stage.slots.join(', ') + '.',
       'Each shotOutline item must include slot, label, concept, angleFamily, shotScale, lensClass, lightingFamily, and sceneFamily. Use only the allowed category IDs already listed in the instructions.',
+    ].join('\n')
+  }
+  if (stage.fullPlan) {
+    return [
+      'Return valid JSON only with keys product, sellingPoints, visualDna, photographyAnalysis, seriesStyleGuide, and imagePlans.',
+      'imagePlans must contain exactly these slots in order: ' + stage.slots.join(', ') + '.',
+      'Each imagePlans item must include slot, label, planMarkdown, prompt, negativePrompt, and photographyDecision.',
+      'photographyDecision must include productSuitability, angleFamily, angle, shotScale, framing, cameraSystem, lensClass, lens, exposure, focusStrategy, lightingFamily, lighting, sceneFamily, scene, and differentiation.',
     ].join('\n')
   }
   return [
