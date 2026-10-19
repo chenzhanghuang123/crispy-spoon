@@ -107,6 +107,12 @@ export interface PlannerApiResult {
 
 export type EtsyShotGroup = 'original' | 'additional'
 
+let etsyOriginalCheckpoint: { key: string; savedAt: number; result: PlannerApiResult } | null = null
+
+export function clearEtsyOriginalPlannerCheckpoint(): void {
+  etsyOriginalCheckpoint = null
+}
+
 export interface EtsyPlannerCampaignContext {
   visualDna: EtsyVisualDna
   photographyAnalysis: EtsyPhotographyAnalysis
@@ -618,7 +624,7 @@ function getPlannerTextFromEvent(event: Record<string, unknown>): string {
   return ''
 }
 
-function createPlannerStreamCollector(requireCompletion: boolean) {
+function createPlannerStreamCollector(requireCompletion: boolean, onActivity?: (characters?: number) => void) {
   let completedText = ''
   let outputItemText = ''
   let doneText = ''
@@ -639,7 +645,12 @@ function createPlannerStreamCollector(requireCompletion: boolean) {
       if (!isRecordValue(choice.delta)) continue
       sawChatDelta = true
       // Chat fragments may be only a space; trimming them changes the prompt.
-      if (typeof choice.delta.content === 'string') deltaText += choice.delta.content
+      if (typeof choice.delta.content === 'string' && choice.delta.content.length) {
+        deltaText += choice.delta.content
+        onActivity?.(deltaText.length)
+      } else if (typeof choice.delta.reasoning_content === 'string' && choice.delta.reasoning_content.length) {
+        onActivity?.()
+      }
     }
     if (choices.some((choice) => isRecordValue(choice) && isRecordValue(choice.delta))) return
 
@@ -647,12 +658,14 @@ function createPlannerStreamCollector(requireCompletion: boolean) {
     if (type === 'response.output_text.delta') {
       sawResponsesDelta = true
       deltaText += getStringValue(event, 'delta') ?? ''
+      if (getStringValue(event, 'delta')) onActivity?.(deltaText.length)
       return
     }
     if (type === 'response.completed') responsesCompleted = true
 
     const text = getPlannerTextFromEvent(event)
     if (!text) return
+    onActivity?.(text.length)
 
     if (type === 'response.completed') completedText = text
     else if (type === 'response.output_item.done') outputItemText = text
@@ -690,14 +703,14 @@ function assertPlannerOutputComplete(payload: unknown): void {
   }
 }
 
-async function readPlannerTextFromSseResponse(response: Response, requireCompletion: boolean): Promise<PlannerResponseTextResult> {
-  const collector = createPlannerStreamCollector(requireCompletion)
+async function readPlannerTextFromSseResponse(response: Response, requireCompletion: boolean, onActivity?: (characters?: number) => void): Promise<PlannerResponseTextResult> {
+  const collector = createPlannerStreamCollector(requireCompletion, onActivity)
   await readJsonServerSentEvents(response, collector.onEvent)
   return collector.result()
 }
 
-async function readPlannerTextFromSseText(rawText: string, requireCompletion: boolean): Promise<PlannerResponseTextResult> {
-  const collector = createPlannerStreamCollector(requireCompletion)
+async function readPlannerTextFromSseText(rawText: string, requireCompletion: boolean, onActivity?: (characters?: number) => void): Promise<PlannerResponseTextResult> {
+  const collector = createPlannerStreamCollector(requireCompletion, onActivity)
   await readJsonServerSentEventText(rawText, collector.onEvent)
   return collector.result()
 }
@@ -712,9 +725,9 @@ function truncateForError(text: string): string {
   return `${trimmed.slice(0, 1200)}...`
 }
 
-async function readPlannerResponseText(response: Response, requireCompletion = false): Promise<PlannerResponseTextResult> {
+async function readPlannerResponseText(response: Response, requireCompletion = false, onActivity?: (characters?: number) => void): Promise<PlannerResponseTextResult> {
   if (isEventStreamResponse(response)) {
-    const result = await readPlannerTextFromSseResponse(response, requireCompletion)
+    const result = await readPlannerTextFromSseResponse(response, requireCompletion, onActivity)
     if (!result.text) throw new Error('AI 策划流式接口未返回文本内容')
     return result
   }
@@ -723,7 +736,7 @@ async function readPlannerResponseText(response: Response, requireCompletion = f
   if (!rawText.trim()) throw new Error('AI 策划接口返回空内容')
 
   if (looksLikeServerSentEvents(rawText)) {
-    const result = await readPlannerTextFromSseText(rawText, requireCompletion)
+    const result = await readPlannerTextFromSseText(rawText, requireCompletion, onActivity)
     if (!result.text) throw new Error('AI 策划流式接口未返回文本内容')
     return result
   }
@@ -1855,9 +1868,10 @@ async function callBatchedEtsyPlanner(options: {
   fallbackTitle: string
   slots: string[]
   shotGroup: EtsyShotGroup
+  checkpointKey: string
   signal?: AbortSignal
   onProgress?: (message: string) => void
-  request: (stage: EtsyPlannerRequestStage, signal: AbortSignal) => Promise<PlannerResponseTextResult>
+  request: (stage: EtsyPlannerRequestStage, signal: AbortSignal, onActivity: (characters?: number) => void) => Promise<PlannerResponseTextResult>
 }): Promise<PlannerApiResult> {
   const controller = new AbortController()
   const abort = () => controller.abort(options.signal?.reason)
@@ -1869,15 +1883,34 @@ async function callBatchedEtsyPlanner(options: {
     const stageController = new AbortController()
     const stop = () => stageController.abort(controller.signal.reason)
     controller.signal.addEventListener('abort', stop, { once: true })
-    let timedOut = false
-    const timer = setTimeout(() => { timedOut = true; stageController.abort() }, 180_000)
+    let timeoutReason = ''
+    const timeOut = (reason: string) => {
+      if (stageController.signal.aborted) return
+      timeoutReason = reason
+      stageController.abort()
+    }
+    let idleTimer = setTimeout(() => timeOut('连续 3 分钟未收到有效内容，服务商上游可能已停止响应。'), 180_000)
+    const totalTimer = setTimeout(() => timeOut('总耗时超过 10 分钟，已停止本次请求。请检查服务商上游速度。'), 600_000)
+    let lastProgressAt = 0
+    const onActivity = (characters?: number) => {
+      if (stageController.signal.aborted) return
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => timeOut('连续 3 分钟未收到有效内容，服务商上游可能已停止响应。'), 180_000)
+      if (Date.now() - lastProgressAt < 1000) return
+      lastProgressAt = Date.now()
+      options.onProgress?.(`Etsy ${stage.name}：${characters ? `已接收 ${characters} 字符，正在继续接收` : '服务商正在分析产品'}`)
+    }
+    options.onProgress?.(`Etsy ${stage.name}：等待服务商响应`)
     try {
-      return await options.request(stage, stageController.signal)
+      const result = await options.request(stage, stageController.signal, onActivity)
+      stageController.signal.throwIfAborted()
+      return result
     } catch (error) {
-      if (timedOut) throw new Error(`Etsy ${stage.name}等待超过 3 分钟，服务商上游仍未完成响应。`)
+      if (timeoutReason) throw new Error(`Etsy ${stage.name}${timeoutReason}`)
       throw error
     } finally {
-      clearTimeout(timer)
+      clearTimeout(idleTimer)
+      clearTimeout(totalTimer)
       controller.signal.removeEventListener('abort', stop)
       stageController.abort()
     }
@@ -1919,14 +1952,21 @@ async function callBatchedEtsyPlanner(options: {
     throw new Error(validationError)
   }
 
+  const results: PlannerApiResult[] = []
   try {
     const slots = options.slots
     const groups = [slots.slice(0, 5), slots.slice(5)].filter((group) => group.length > 0)
-    const results: PlannerApiResult[] = []
-    options.onProgress?.(`正在分两组策划 ${slots.length} 张镜头：0/${slots.length}`)
+    const checkpoint = etsyOriginalCheckpoint
+    if (checkpoint?.key === options.checkpointKey && Date.now() - checkpoint.savedAt < 30 * 60_000) {
+      results.push(checkpoint.result)
+      options.onProgress?.('已恢复通过校验的前 5 张，继续策划第二组')
+    } else {
+      clearEtsyOriginalPlannerCheckpoint()
+    }
 
     for (const [groupIndex, group] of groups.entries()) {
       controller.signal.throwIfAborted()
+      if (groupIndex < results.length) continue
       const groupLabel = groupIndex === 0 ? '第一组 5 张' : '第二组 5 张'
       const previous = results[0]
       const lockContext = previous
@@ -1956,6 +1996,9 @@ async function callBatchedEtsyPlanner(options: {
         return normalized
       })
       results.push(result)
+      if (groupIndex === 0) {
+        etsyOriginalCheckpoint = { key: options.checkpointKey, savedAt: Date.now(), result }
+      }
       options.onProgress?.(`正在分两组策划 ${slots.length} 张镜头：${Math.min((groupIndex + 1) * 5, slots.length)}/${slots.length}`)
     }
 
@@ -1965,7 +2008,13 @@ async function callBatchedEtsyPlanner(options: {
     const mergedPlans = results.flatMap((result) => result.plans)
     assertEtsyPhotographyDiversity(mergedPlans)
     options.onProgress?.(`正在校验 ${slots.length} 张镜头的完整性与差异`)
+    if (etsyOriginalCheckpoint?.key === options.checkpointKey) clearEtsyOriginalPlannerCheckpoint()
     return { ...first, plans: mergedPlans, etsyShotGroup: options.shotGroup }
+  } catch (error) {
+    if (!controller.signal.aborted && results.length) {
+      throw new Error(`${error instanceof Error ? error.message : String(error)}\n\n已在本页暂存通过校验的前 5 张（30 分钟内有效）；保持产品描述、参考图和接口配置不变，再点原有10张即可继续第二组。刷新页面会清除暂存。`)
+    }
+    throw error
   } finally {
     options.signal?.removeEventListener('abort', abort)
     controller.abort()
@@ -2099,7 +2148,7 @@ export async function callAmazonPlannerApi(options: {
                 },
               ],
               response_format: { type: 'json_object' },
-              stream: false,
+              stream: mode === 'etsy' && etsyShotGroup === 'original',
             }
           : {
               model,
@@ -2113,7 +2162,7 @@ export async function callAmazonPlannerApi(options: {
                   schema: requestSchema,
                 },
               },
-              stream: false,
+              stream: mode === 'etsy' && etsyShotGroup === 'original',
             },
         ),
       },
@@ -2122,6 +2171,14 @@ export async function callAmazonPlannerApi(options: {
 
   const fallbackTitle = options.baseDraft.productTitle || inferTitleFromListingText(options.listingText)
   if (mode === 'etsy' && etsyShotGroup === 'original') {
+    options.signal?.throwIfAborted()
+    // Hash credentials and reference content so the one-page checkpoint cannot cross inputs or accounts.
+    const checkpointDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({
+      baseDraft: options.baseDraft, inputText, referenceImageDataUrls, model, marketplaceId,
+      baseUrl: options.profile.baseUrl, apiMode: options.profile.apiMode,
+      apiProxy: options.profile.apiProxy, apiKey: options.profile.apiKey,
+    })))
+    const checkpointKey = Array.from(new Uint8Array(checkpointDigest), (value) => value.toString(16).padStart(2, '0')).join('')
     return callBatchedEtsyPlanner({
       baseDraft: options.baseDraft,
       buildInputText: (slots) => buildPlannerInputText(options.listingText, mode, aPlusType, {
@@ -2138,15 +2195,16 @@ export async function callAmazonPlannerApi(options: {
       fallbackTitle,
       slots: etsySlots,
       shotGroup: etsyShotGroup,
+      checkpointKey,
       signal: options.signal,
       onProgress: options.onProgress,
-      request: async (stage, signal) => {
+      request: async (stage, signal, onActivity) => {
         const stageResponse = await request(undefined, stage, signal)
         if (!stageResponse.ok) {
           const message = await getApiErrorMessage(stageResponse)
           throw new Error(`HTTP ${stageResponse.status}: ${message}`)
         }
-        return readPlannerResponseText(stageResponse, true)
+        return readPlannerResponseText(stageResponse, true, onActivity)
       },
     })
   }

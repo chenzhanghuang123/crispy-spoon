@@ -39,7 +39,7 @@ import {
   type AmazonPlannerMode,
   type AmazonStyleDensityMode,
 } from '../lib/listingPlanner'
-import { callAmazonPlannerApi, callEtsyListingDetailsApi, formatEtsyListingDetailsMarkdown, type EtsyShotGroup, type PlannerApiResult } from '../lib/listingPlannerApi'
+import { callAmazonPlannerApi, callEtsyListingDetailsApi, clearEtsyOriginalPlannerCheckpoint, formatEtsyListingDetailsMarkdown, type EtsyShotGroup, type PlannerApiResult } from '../lib/listingPlannerApi'
 import { deleteAmazonPlannerSession, getAllAmazonPlannerSessions, putAmazonPlannerSession } from '../lib/db'
 import {
   AMAZON_MARKETPLACES,
@@ -480,6 +480,7 @@ export default function AmazonPlanner() {
   const [aPlusType, setAPlusType] = useState<APlusContentType>('standard-large')
   const [aPlusModuleSpecsByType, setAPlusModuleSpecsByType] = useState<APlusModuleSpecsByType>({})
   const [listingText, setListingText] = useState('')
+  const [etsyPlanningProgress, setEtsyPlanningProgress] = useState('')
   const [imagePlans, setImagePlans] = useState<AmazonImagePlan[]>([])
   const [aPlusPlans, setAPlusPlans] = useState<AmazonAPlusPlan[]>([])
   const [seriesStyleGuides, setSeriesStyleGuides] = useState<{ listing: string; aplus: string; etsy: string }>({
@@ -1423,6 +1424,7 @@ export default function AmazonPlanner() {
     plannerAbortControllerRef.current = controller
     setIsPlanning(true)
     setPlanningEtsyShotGroup(plannerMode === 'etsy' ? etsyShotGroup ?? null : null)
+    setEtsyPlanningProgress('')
     setPlannerError('')
     try {
       const currentMarketplaceId = marketplaceId
@@ -1443,6 +1445,9 @@ export default function AmazonPlanner() {
           ? { visualDna: etsyVisualDna, photographyAnalysis: etsyPhotographyAnalysis, plans: imagePlans }
           : undefined,
         signal: controller.signal,
+        onProgress: plannerMode === 'etsy' && etsyShotGroup === 'original'
+          ? (message) => { if (!controller.signal.aborted) setEtsyPlanningProgress(message) }
+          : undefined,
       })
       if (controller.signal.aborted) return
       applyPlannerResult(result, plannerMode === 'etsy'
@@ -1457,6 +1462,7 @@ export default function AmazonPlanner() {
         plannerAbortControllerRef.current = null
         setIsPlanning(false)
         setPlanningEtsyShotGroup(null)
+        setEtsyPlanningProgress('')
       }
     }
   }
@@ -1468,6 +1474,7 @@ export default function AmazonPlanner() {
     plannerAbortControllerRef.current = null
     setIsPlanning(false)
     setPlanningEtsyShotGroup(null)
+    setEtsyPlanningProgress('')
     showToast('AI 策划已停止', 'info')
   }
 
@@ -1702,6 +1709,8 @@ export default function AmazonPlanner() {
   }
 
   const clearListingPlan = () => {
+    clearEtsyOriginalPlannerCheckpoint()
+    setEtsyPlanningProgress('')
     setListingText('')
     setMarketplaceId(DEFAULT_AMAZON_MARKETPLACE_ID)
     setListingImageCount(DEFAULT_LISTING_IMAGE_COUNT)
@@ -2291,6 +2300,11 @@ export default function AmazonPlanner() {
                      ? '原有10张与新增5张分别策划、分别显示；点击哪个按钮就只处理对应镜头。Phase 2 点击提交生成时才调用生图配置。'
                   : 'AI策划使用设置中的策划配置，生图配置保持不变。'}
             </div>
+            {isEtsyImageMode && isPlanning && planningEtsyShotGroup === 'original' && etsyPlanningProgress && (
+              <div role="status" aria-live="polite" className="mt-2 text-xs leading-relaxed text-[hsl(var(--primary))]">
+                {etsyPlanningProgress}
+              </div>
+            )}
             {plannerUsesOfficialDeepSeek && (
               <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-400/25 dark:bg-amber-400/10 dark:text-amber-100">
                 {isEtsyListingMode ? DEEPSEEK_ETSY_LISTING_NOTICE : DEEPSEEK_PLANNER_NOTICE}
