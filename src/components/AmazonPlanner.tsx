@@ -1445,7 +1445,7 @@ export default function AmazonPlanner() {
           ? { visualDna: etsyVisualDna, photographyAnalysis: etsyPhotographyAnalysis, plans: imagePlans }
           : undefined,
         signal: controller.signal,
-        onProgress: plannerMode === 'etsy' && etsyShotGroup === 'original'
+        onProgress: plannerMode === 'etsy' && Boolean(etsyShotGroup)
           ? (message) => { if (!controller.signal.aborted) setEtsyPlanningProgress(message) }
           : undefined,
       })
@@ -2300,7 +2300,7 @@ export default function AmazonPlanner() {
                      ? '原有10张与新增5张分别策划、分别显示；点击哪个按钮就只处理对应镜头。Phase 2 点击提交生成时才调用生图配置。'
                   : 'AI策划使用设置中的策划配置，生图配置保持不变。'}
             </div>
-            {isEtsyImageMode && isPlanning && planningEtsyShotGroup === 'original' && etsyPlanningProgress && (
+            {isEtsyImageMode && isPlanning && planningEtsyShotGroup && etsyPlanningProgress && (
               <div role="status" aria-live="polite" className="mt-2 text-xs leading-relaxed text-[hsl(var(--primary))]">
                 {etsyPlanningProgress}
               </div>

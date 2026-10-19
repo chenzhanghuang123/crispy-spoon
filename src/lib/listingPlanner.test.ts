@@ -604,7 +604,7 @@ describe('callAmazonPlannerApi', () => {
     expect(secondBody.input[0].content[0].text).toContain('Locked campaign diagnosis')
     expect(secondBody.input[0].content).toContainEqual({ type: 'input_image', image_url: 'data:image/jpeg;base64,reference' })
     const additionalBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
-    expect(additionalBody.stream).toBe(false)
+    expect(additionalBody.stream).toBe(true)
     expect(additionalBody.text.format.schema.properties.imagePlans.minItems).toBe(5)
     expect(additionalBody.text.format.schema.properties.imagePlans.maxItems).toBe(5)
     expect(additionalBody.instructions).toContain('E11, E12, E13, E14, E15')
@@ -673,7 +673,7 @@ describe('callAmazonPlannerApi', () => {
       profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'chat' }),
     })
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
-    expect(body.stream).toBe(false)
+    expect(body.stream).toBe(true)
     expect(body.messages[0].content).toContain('exactly 5 items in this order: E11, E12, E13, E14, E15')
     expect(result.plans).toHaveLength(5)
     expect(result.plans[0]?.slot).toBe('E11')
@@ -1116,13 +1116,21 @@ describe('callAmazonPlannerApi', () => {
     }
   })
 
-  it.each(['chat', 'responses'] as const)('finishes slow original-ten %s streams beyond three minutes without changing production content', async (apiMode) => {
+  it.each([
+    ['original', 'chat'], ['original', 'responses'],
+    ['additional', 'chat'], ['additional', 'responses'],
+  ] as const)('finishes slow %s %s streams beyond three minutes without changing production content', async (etsyShotGroup, apiMode) => {
     vi.useFakeTimers()
     try {
       const payload = createEtsyPayload()
       const onProgress = vi.fn()
+      const campaignContext = {
+        visualDna: payload.visualDna, photographyAnalysis: payload.photographyAnalysis,
+        plans: payload.imagePlans.slice(0, 10),
+      }
+      const originalSnapshot = JSON.stringify(campaignContext)
       const fetchMock = vi.fn().mockImplementation((_url, init) => {
-        const batchIndex = fetchMock.mock.calls.length - 1
+        const batchIndex = etsyShotGroup === 'additional' ? 2 : fetchMock.mock.calls.length - 1
         const output = JSON.stringify({ ...payload, imagePlans: payload.imagePlans.slice(batchIndex * 5, batchIndex * 5 + 5) })
         const fragments = [output.slice(0, 100), output.slice(100, 300), output.slice(300)]
         return new Response(new ReadableStream<Uint8Array>({
@@ -1145,7 +1153,9 @@ describe('callAmazonPlannerApi', () => {
       vi.stubGlobal('fetch', fetchMock)
       const result = callAmazonPlannerApi({
         listingText: 'Hand-thrown ceramic mug.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
-        mode: 'etsy', etsyShotGroup: 'original', onProgress,
+        mode: 'etsy', etsyShotGroup, onProgress,
+        ...(etsyShotGroup === 'additional' ? { etsyCampaignContext: campaignContext } : {}),
+        referenceImageDataUrls: ['data:image/jpeg;base64,reference'],
         profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode }),
       })
       await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
@@ -1153,12 +1163,23 @@ describe('callAmazonPlannerApi', () => {
       expect(fetchMock.mock.calls[0]?.[1]?.signal.aborted).toBe(false)
       expect(fetchMock).toHaveBeenCalledTimes(1)
       await vi.advanceTimersByTimeAsync(41_000)
-      expect(fetchMock).toHaveBeenCalledTimes(2)
-      await vi.advanceTimersByTimeAsync(221_000)
+      if (etsyShotGroup === 'original') {
+        expect(fetchMock).toHaveBeenCalledTimes(2)
+        await vi.advanceTimersByTimeAsync(221_000)
+      } else expect(fetchMock).toHaveBeenCalledTimes(1)
       const completed = await result
       expect(completed.plans.map((plan) => [plan.prompt, plan.photographyDecision])).toEqual(
-        payload.imagePlans.slice(0, 10).map((plan) => [plan.prompt, plan.photographyDecision]),
+        payload.imagePlans.slice(etsyShotGroup === 'additional' ? 10 : 0, etsyShotGroup === 'additional' ? 15 : 10)
+          .map((plan) => [plan.prompt, plan.photographyDecision]),
       )
+      expect(JSON.stringify(campaignContext)).toBe(originalSnapshot)
+      for (const [, init] of fetchMock.mock.calls) {
+        const body = JSON.parse(String(init.body))
+        expect(body.stream).toBe(true)
+        expect(apiMode === 'chat' ? body.messages[1].content : body.input[0].content).toContainEqual(apiMode === 'chat'
+          ? { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,reference' } }
+          : { type: 'input_image', image_url: 'data:image/jpeg;base64,reference' })
+      }
       expect(onProgress.mock.calls.some(([message]) => message.includes('已接收'))).toBe(true)
       expect(vi.getTimerCount()).toBe(0)
     } finally {
@@ -1166,7 +1187,10 @@ describe('callAmazonPlannerApi', () => {
     }
   })
 
-  it.each(['heartbeat', 'reasoning'] as const)('bounds an original-ten stream producing only %s and cancels its timers', async (activity) => {
+  it.each([
+    ['original', 'heartbeat'], ['original', 'reasoning'],
+    ['additional', 'heartbeat'], ['additional', 'reasoning'],
+  ] as const)('bounds an %s stream producing only %s and cancels its timers', async (etsyShotGroup, activity) => {
     vi.useFakeTimers()
     try {
       const fetchMock = vi.fn().mockImplementation((_url, init) => new Response(new ReadableStream<Uint8Array>({
@@ -1183,7 +1207,7 @@ describe('callAmazonPlannerApi', () => {
       vi.stubGlobal('fetch', fetchMock)
       const result = callAmazonPlannerApi({
         listingText: 'Hand-thrown ceramic mug.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
-        mode: 'etsy', etsyShotGroup: 'original',
+        mode: 'etsy', etsyShotGroup,
         profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'chat' }),
       })
       const failure = expect(result).rejects.toThrow(activity === 'heartbeat' ? '连续 3 分钟未收到有效内容' : '总耗时超过 10 分钟')
@@ -1264,7 +1288,7 @@ describe('callAmazonPlannerApi', () => {
     }
   })
 
-  it('repairs only the requested Etsy group when combined campaign diversity fails', async () => {
+  it.each(['chat', 'responses'] as const)('streams only the requested Etsy group in %s when combined campaign diversity needs repair', async (apiMode) => {
     const fullPayload = createEtsyPayload()
     const originalPlans = fullPayload.imagePlans.slice(0, ETSY_ORIGINAL_SHOT_COUNT)
     const invalidAdditionalPayload = {
@@ -1275,22 +1299,31 @@ describe('callAmazonPlannerApi', () => {
       })),
     }
     const additionalPayload = { ...fullPayload, imagePlans: fullPayload.imagePlans.slice(ETSY_ORIGINAL_SHOT_COUNT) }
-    const jsonResponse = (payload: unknown) => new Response(JSON.stringify({ output_text: JSON.stringify(payload) }), {
-      headers: { 'Content-Type': 'application/json' },
-    })
+    const response = (payload: unknown) => createPlannerStreamResponse(apiMode === 'chat'
+      ? [
+        { choices: [{ index: 0, delta: { content: JSON.stringify(payload) } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+      ]
+      : [
+        { type: 'response.output_text.delta', delta: JSON.stringify(payload) },
+        { type: 'response.completed' },
+      ])
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(invalidAdditionalPayload))
-      .mockResolvedValueOnce(jsonResponse(additionalPayload))
+      .mockResolvedValueOnce(response(invalidAdditionalPayload))
+      .mockResolvedValueOnce(response(additionalPayload))
     vi.stubGlobal('fetch', fetchMock)
     const common = {
       listingText: 'Hand-thrown seafoam ceramic mug with speckled stoneware.',
       baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
       mode: 'etsy' as const,
-      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' as const }),
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode }),
     }
+    const onProgress = vi.fn()
+    const originalSnapshot = JSON.stringify(originalPlans)
     const additional = await callAmazonPlannerApi({
       ...common,
       etsyShotGroup: 'additional',
+      onProgress,
       etsyCampaignContext: {
         visualDna: fullPayload.visualDna,
         photographyAnalysis: fullPayload.photographyAnalysis,
@@ -1298,12 +1331,87 @@ describe('callAmazonPlannerApi', () => {
       },
     })
     const repairBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
+    const repairInput = apiMode === 'chat' ? repairBody.messages[1].content : repairBody.input[0].content[0].text
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(repairBody.input[0].content[0].text).toContain('Locked existing campaign context')
-    expect(repairBody.input[0].content[0].text).toContain('complete fifteen-shot campaign must have at least 5 angleFamily values')
+    expect(fetchMock.mock.calls.every(([, init]) => JSON.parse(String(init?.body)).stream)).toBe(true)
+    expect(repairInput).toContain('Locked existing campaign context')
+    expect(repairInput).toContain('complete fifteen-shot campaign must have at least 5 angleFamily values')
+    expect(onProgress).toHaveBeenCalledWith('Etsy 新增5张自动纠错：等待服务商响应')
+    expect(JSON.stringify(originalPlans)).toBe(originalSnapshot)
     expect(additional.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(ETSY_ORIGINAL_SHOT_COUNT))
+    expect(additional.plans.map((plan) => [plan.prompt, plan.photographyDecision])).toEqual(
+      additionalPayload.imagePlans.map((plan) => [plan.prompt, plan.photographyDecision]),
+    )
     expect(mergeEtsyShotGroups(originalPlans, additional.plans)).toHaveLength(ETSY_SHOT_COUNT)
+  })
+
+  it.each([
+    ['initial', 'headers'], ['initial', 'body'],
+    ['repair', 'headers'], ['repair', 'body'],
+  ] as const)('cancels an additional-five %s request while waiting for %s without starting another request', async (stage, waitingFor) => {
+    vi.useFakeTimers()
+    try {
+      const controller = new AbortController()
+      const fetchMock = vi.fn()
+      if (stage === 'repair') fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ output_text: '{}' }), {
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      fetchMock.mockImplementation((_url, init) => waitingFor === 'headers'
+        ? new Promise<Response>((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }))
+        : new Response(new ReadableStream<Uint8Array>({
+          start(stream) {
+            stream.enqueue(new TextEncoder().encode(': connected\n\n'))
+            init.signal.addEventListener('abort', () => stream.error(init.signal.reason), { once: true })
+          },
+        }), { headers: { 'Content-Type': 'text/event-stream' } }))
+      vi.stubGlobal('fetch', fetchMock)
+      const result = callAmazonPlannerApi({
+        listingText: 'Hand-thrown ceramic mug.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+        mode: 'etsy', etsyShotGroup: 'additional', signal: controller.signal,
+        profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'chat' }),
+      })
+      const failure = expect(result).rejects.toThrow('User stopped planning')
+      const requestCount = stage === 'repair' ? 2 : 1
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(requestCount))
+      controller.abort(new DOMException('User stopped planning', 'AbortError'))
+      await failure
+      expect(fetchMock).toHaveBeenCalledTimes(requestCount)
+      expect(fetchMock.mock.calls[requestCount - 1]?.[1]?.signal.aborted).toBe(true)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['headers', 'body'] as const)('bounds a stalled additional-five repair waiting for %s', async (waitingFor) => {
+    vi.useFakeTimers()
+    try {
+      const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ output_text: '{}' }), {
+        headers: { 'Content-Type': 'application/json' },
+      })).mockImplementation((_url, init) => waitingFor === 'headers'
+        ? new Promise<Response>((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }))
+        : new Response(new ReadableStream<Uint8Array>({
+          start(stream) {
+            init.signal.addEventListener('abort', () => stream.error(init.signal.reason), { once: true })
+          },
+        }), { headers: { 'Content-Type': 'text/event-stream' } }))
+      vi.stubGlobal('fetch', fetchMock)
+      const result = callAmazonPlannerApi({
+        listingText: 'Hand-thrown ceramic mug.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+        mode: 'etsy', etsyShotGroup: 'additional',
+        profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses' }),
+      })
+      const failure = expect(result).rejects.toThrow('新增5张自动纠错连续 3 分钟未收到有效内容')
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+      await vi.advanceTimersByTimeAsync(180_001)
+      await failure
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(fetchMock.mock.calls[1]?.[1]?.signal.aborted).toBe(true)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not retry an Etsy upstream 429 automatically', async () => {

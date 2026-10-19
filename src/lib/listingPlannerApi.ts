@@ -1860,6 +1860,49 @@ async function repairEtsyPhotographyCategories(
   throw new Error('Etsy 分类校正未完成')
 }
 
+async function requestEtsyPlannerStage(options: {
+  name: string
+  signal?: AbortSignal
+  onProgress?: (message: string) => void
+  request: (signal: AbortSignal, onActivity: (characters?: number) => void) => Promise<PlannerResponseTextResult>
+}): Promise<PlannerResponseTextResult> {
+  options.signal?.throwIfAborted()
+  const controller = new AbortController()
+  const stop = () => controller.abort(options.signal?.reason)
+  options.signal?.addEventListener('abort', stop, { once: true })
+  let timeoutReason = ''
+  const timeOut = (reason: string) => {
+    if (controller.signal.aborted) return
+    timeoutReason = reason
+    controller.abort()
+  }
+  let idleTimer = setTimeout(() => timeOut('连续 3 分钟未收到有效内容，服务商上游可能已停止响应。'), 180_000)
+  const totalTimer = setTimeout(() => timeOut('总耗时超过 10 分钟，已停止本次请求。请检查服务商上游速度。'), 600_000)
+  let lastProgressAt = 0
+  const onActivity = (characters?: number) => {
+    if (controller.signal.aborted) return
+    clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => timeOut('连续 3 分钟未收到有效内容，服务商上游可能已停止响应。'), 180_000)
+    if (Date.now() - lastProgressAt < 1000) return
+    lastProgressAt = Date.now()
+    options.onProgress?.(`Etsy ${options.name}：${characters ? `已接收 ${characters} 字符，正在继续接收` : '服务商正在分析产品'}`)
+  }
+  try {
+    options.onProgress?.(`Etsy ${options.name}：等待服务商响应`)
+    const result = await options.request(controller.signal, onActivity)
+    controller.signal.throwIfAborted()
+    return result
+  } catch (error) {
+    if (timeoutReason) throw new Error(`Etsy ${options.name}${timeoutReason}`)
+    throw error
+  } finally {
+    clearTimeout(idleTimer)
+    clearTimeout(totalTimer)
+    options.signal?.removeEventListener('abort', stop)
+    controller.abort()
+  }
+}
+
 async function callBatchedEtsyPlanner(options: {
   baseDraft: AmazonPromptDraft
   buildInputText: (slots: string[]) => string
@@ -1878,43 +1921,12 @@ async function callBatchedEtsyPlanner(options: {
   if (options.signal?.aborted) abort()
   options.signal?.addEventListener('abort', abort, { once: true })
 
-  const requestStage = async (stage: EtsyPlannerRequestStage): Promise<PlannerResponseTextResult> => {
-    controller.signal.throwIfAborted()
-    const stageController = new AbortController()
-    const stop = () => stageController.abort(controller.signal.reason)
-    controller.signal.addEventListener('abort', stop, { once: true })
-    let timeoutReason = ''
-    const timeOut = (reason: string) => {
-      if (stageController.signal.aborted) return
-      timeoutReason = reason
-      stageController.abort()
-    }
-    let idleTimer = setTimeout(() => timeOut('连续 3 分钟未收到有效内容，服务商上游可能已停止响应。'), 180_000)
-    const totalTimer = setTimeout(() => timeOut('总耗时超过 10 分钟，已停止本次请求。请检查服务商上游速度。'), 600_000)
-    let lastProgressAt = 0
-    const onActivity = (characters?: number) => {
-      if (stageController.signal.aborted) return
-      clearTimeout(idleTimer)
-      idleTimer = setTimeout(() => timeOut('连续 3 分钟未收到有效内容，服务商上游可能已停止响应。'), 180_000)
-      if (Date.now() - lastProgressAt < 1000) return
-      lastProgressAt = Date.now()
-      options.onProgress?.(`Etsy ${stage.name}：${characters ? `已接收 ${characters} 字符，正在继续接收` : '服务商正在分析产品'}`)
-    }
-    options.onProgress?.(`Etsy ${stage.name}：等待服务商响应`)
-    try {
-      const result = await options.request(stage, stageController.signal, onActivity)
-      stageController.signal.throwIfAborted()
-      return result
-    } catch (error) {
-      if (timeoutReason) throw new Error(`Etsy ${stage.name}${timeoutReason}`)
-      throw error
-    } finally {
-      clearTimeout(idleTimer)
-      clearTimeout(totalTimer)
-      controller.signal.removeEventListener('abort', stop)
-      stageController.abort()
-    }
-  }
+  const requestStage = (stage: EtsyPlannerRequestStage) => requestEtsyPlannerStage({
+    name: stage.name,
+    signal: controller.signal,
+    onProgress: options.onProgress,
+    request: (signal, onActivity) => options.request(stage, signal, onActivity),
+  })
 
   const runStage = async <T,>(stage: EtsyPlannerRequestStage, validate: (payload: PlannerApiPayload) => T): Promise<T> => {
     let previousOutput = ''
@@ -2066,6 +2078,7 @@ export async function callAmazonPlannerApi(options: {
   const model = options.model?.trim() || options.profile.model.trim() || (options.profile.apiMode === 'chat' ? DEFAULT_CHAT_MODEL : DEFAULT_RESPONSES_MODEL)
   const mode = options.mode ?? 'listing'
   const etsyShotGroup = mode === 'etsy' ? options.etsyShotGroup : undefined
+  const streamEtsyGroup = mode === 'etsy' && Boolean(etsyShotGroup)
   const etsySlots = mode === 'etsy' ? getEtsyShotGroupSlots(etsyShotGroup) : getEtsyImageSlots()
   const marketplaceId = normalizeAmazonMarketplaceId(options.marketplaceId)
   const aPlusType = options.aPlusType ?? 'standard-large'
@@ -2148,7 +2161,7 @@ export async function callAmazonPlannerApi(options: {
                 },
               ],
               response_format: { type: 'json_object' },
-              stream: mode === 'etsy' && etsyShotGroup === 'original',
+              stream: streamEtsyGroup,
             }
           : {
               model,
@@ -2162,7 +2175,7 @@ export async function callAmazonPlannerApi(options: {
                   schema: requestSchema,
                 },
               },
-              stream: mode === 'etsy' && etsyShotGroup === 'original',
+              stream: streamEtsyGroup,
             },
         ),
       },
@@ -2209,13 +2222,26 @@ export async function callAmazonPlannerApi(options: {
     })
   }
 
-  const response = await request()
-
-  if (!response.ok) {
-    const message = await getApiErrorMessage(response)
-    throw new Error(`HTTP ${response.status}: ${message}`)
+  const requestResult = (repair?: { previousOutput: string; errorMessage: string }) => {
+    const read = async (signal?: AbortSignal, onActivity?: (characters?: number) => void) => {
+      const response = await request(repair, undefined, signal)
+      if (!response.ok) {
+        const message = await getApiErrorMessage(response)
+        const failure = `HTTP ${response.status}: ${message}`
+        throw new Error(repair ? `${repair.errorMessage}\n\n自动纠错失败：${failure}` : failure)
+      }
+      return readPlannerResponseText(response, mode === 'etsy', onActivity)
+    }
+    return mode === 'etsy' && etsyShotGroup === 'additional'
+      ? requestEtsyPlannerStage({
+        name: repair ? '新增5张自动纠错' : '新增5张',
+        signal: options.signal,
+        onProgress: options.onProgress,
+        request: read,
+      })
+      : read(options.signal)
   }
-  const responseResult = await readPlannerResponseText(response, mode === 'etsy')
+  const responseResult = await requestResult()
   if (mode === 'etsy') {
     const normalizeEtsyResult = (text: string): PlannerApiResult => {
       const result = normalizeEtsyPlannerApiPayload(parsePlannerPayload(text), marketplaceId, fallbackTitle, etsySlots)
@@ -2231,15 +2257,10 @@ export async function callAmazonPlannerApi(options: {
       return normalizeEtsyResult(responseResult.text)
     } catch (error) {
       const validationMessage = error instanceof Error ? error.message : String(error)
-      const repairResponse = await request({
+      const repairedResult = await requestResult({
         previousOutput: responseResult.text,
         errorMessage: validationMessage,
       })
-      if (!repairResponse.ok) {
-        const repairError = await getApiErrorMessage(repairResponse)
-        throw new Error(`${validationMessage}\n\n自动纠错失败：HTTP ${repairResponse.status}: ${repairError}`)
-      }
-      const repairedResult = await readPlannerResponseText(repairResponse, mode === 'etsy')
       try {
         return normalizeEtsyResult(repairedResult.text)
       } catch (repairValidationError) {
