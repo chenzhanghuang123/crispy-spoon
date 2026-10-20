@@ -954,7 +954,7 @@ describe('callAmazonPlannerApi', () => {
     expect(second.instructions).toContain('campaign-level fields identical')
   })
 
-  it('repairs only the second half when both halves pass separately but the full ten lack angle diversity', async () => {
+  it('replans only one shot when the full ten lack angle diversity, preserving the other nine', async () => {
     const payload = createEtsyPayload()
     const firstPlans = payload.imagePlans.slice(0, 5).map((plan, index) => ({
       ...plan, photographyDecision: { ...plan.photographyDecision, angleFamily: TEST_ANGLE_FAMILIES[index % 3] },
@@ -968,7 +968,7 @@ describe('callAmazonPlannerApi', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response(firstPlans))
       .mockResolvedValueOnce(response(secondPlans))
-      .mockResolvedValueOnce(response(payload.imagePlans.slice(5, 10)))
+      .mockResolvedValueOnce(response([{ ...payload.imagePlans[9]!, prompt: 'Replanned functional viewpoint with the same professional quality.' }]))
     vi.stubGlobal('fetch', fetchMock)
 
     const result = await callAmazonPlannerApi({
@@ -977,10 +977,204 @@ describe('callAmazonPlannerApi', () => {
       profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses' }),
     })
     expect(result.plans.slice(0, 5).map((plan) => plan.photographyDecision)).toEqual(firstPlans.map((plan) => plan.photographyDecision))
+    expect(result.plans.slice(5, 9).map((plan) => [plan.prompt, plan.photographyDecision])).toEqual(secondPlans.slice(0, 4).map((plan) => [plan.prompt, plan.photographyDecision]))
     expect(fetchMock).toHaveBeenCalledTimes(3)
     const repair = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
     expect(repair.input[0].content[0].text).toContain('10 镜头差异检查')
-    expect(repair.text.format.schema.properties.imagePlans.items.properties.slot.enum).toEqual(['E06', 'E07', 'E08', 'E09', 'E10'])
+    expect(repair.text.format.schema.properties.imagePlans.items.properties.slot.enum).toEqual(['E10'])
+    expect(repair.text.format.schema.required).toEqual(['imagePlans'])
+  })
+
+  it.each(['chat', 'responses'] as const)('automatically replans E08 against E02, then corrects a new conflict without changing nine good shots in %s', async (apiMode) => {
+    const payload = createEtsyPayload()
+    const duplicate = { ...payload.imagePlans[7]!, prompt: payload.imagePlans[1]!.prompt, photographyDecision: payload.imagePlans[1]!.photographyDecision }
+    const second = payload.imagePlans.slice(5, 10).map((plan) => plan.slot === 'E08' ? duplicate : plan)
+    const response = (imagePlans: typeof payload.imagePlans) => createPlannerStreamResponse(apiMode === 'chat'
+      ? [{ choices: [{ index: 0, delta: { content: JSON.stringify({ ...payload, imagePlans }) } }] }, { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }]
+      : [{ type: 'response.output_text.delta', delta: JSON.stringify({ ...payload, imagePlans }) }, { type: 'response.completed' }])
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response(payload.imagePlans.slice(0, 5)))
+      .mockResolvedValueOnce(response(second))
+      .mockResolvedValueOnce(response([{ ...payload.imagePlans[7]!, prompt: payload.imagePlans[9]!.prompt, photographyDecision: payload.imagePlans[9]!.photographyDecision }]))
+      .mockResolvedValueOnce(response([payload.imagePlans[7]!]))
+    vi.stubGlobal('fetch', fetchMock)
+    const onProgress = vi.fn()
+    const result = await callAmazonPlannerApi({
+      listingText: 'Exact handmade product with verified materials.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy', etsyShotGroup: 'original', onProgress,
+      referenceImageDataUrls: ['data:image/jpeg;base64,original-reference'],
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode }),
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(result.plans.map((plan) => [plan.prompt, plan.photographyDecision])).toEqual(payload.imagePlans.slice(0, 10).map((plan) => [plan.prompt, plan.photographyDecision]))
+    for (const call of fetchMock.mock.calls.slice(2)) {
+      const body = JSON.parse(String(call[1]?.body))
+      const input = apiMode === 'chat' ? body.messages[1].content : body.input[0].content
+      const instructions = apiMode === 'chat' ? body.messages[0].content : body.instructions
+      expect(body.stream).toBe(true)
+      expect(JSON.stringify(input)).toContain('original-reference')
+      expect(instructions).toContain('all 15 photographyDecision fields detailed')
+      expect(instructions).toContain('Never merely relabel categories')
+      if (apiMode === 'responses') expect(body.text.format.schema.properties.imagePlans.items.properties.slot.enum).toEqual(['E08'])
+      else expect(instructions).toContain('exactly E08')
+    }
+    expect(onProgress.mock.calls.some(([message]) => message.includes('E08（2/3）'))).toBe(true)
+  })
+
+  it.each(['extra-shot', 'unchanged-prompt', 'invalid-json'] as const)('rejects %s in targeted repair and preserves locked shots', async (failure) => {
+    const payload = createEtsyPayload()
+    const second = payload.imagePlans.slice(5, 10).map((plan) => plan.slot === 'E08'
+      ? { ...plan, prompt: 'Repeated second shot.', photographyDecision: payload.imagePlans[1]!.photographyDecision } : plan)
+    const response = (value: unknown) => new Response(JSON.stringify({ output_text: typeof value === 'string' ? value : JSON.stringify(value) }), { headers: { 'Content-Type': 'application/json' } })
+    const invalid = failure === 'extra-shot' ? { imagePlans: [payload.imagePlans[7], payload.imagePlans[1]] }
+      : failure === 'unchanged-prompt' ? { imagePlans: [{ ...payload.imagePlans[7], prompt: 'Repeated second shot.' }] } : '{broken'
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ ...payload, imagePlans: payload.imagePlans.slice(0, 5) }))
+      .mockResolvedValueOnce(response({ ...payload, imagePlans: second }))
+      .mockResolvedValueOnce(response(invalid))
+      .mockResolvedValueOnce(response({ imagePlans: [payload.imagePlans[7]] }))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await callAmazonPlannerApi({
+      listingText: 'Verified product.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT, mode: 'etsy', etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses' }),
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(result.plans.map((plan) => [plan.prompt, plan.photographyDecision])).toEqual(payload.imagePlans.slice(0, 10).map((plan) => [plan.prompt, plan.photographyDecision]))
+    const repair = JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))
+    expect(repair.input[0].content[0].text).toContain('Previous repair error:')
+  })
+
+  it('repairs a duplicate in the first half before requesting the second half', async () => {
+    const payload = createEtsyPayload()
+    const first = payload.imagePlans.slice(0, 5).map((plan) => plan.slot === 'E05'
+      ? { ...plan, prompt: 'Repeated E02 photograph.', photographyDecision: payload.imagePlans[1]!.photographyDecision } : plan)
+    const response = (imagePlans: typeof payload.imagePlans) => new Response(JSON.stringify({ output_text: JSON.stringify({ ...payload, imagePlans }) }), { headers: { 'Content-Type': 'application/json' } })
+    const fetchMock = vi.fn().mockResolvedValueOnce(response(first))
+      .mockResolvedValueOnce(response([payload.imagePlans[4]!]))
+      .mockResolvedValueOnce(response(payload.imagePlans.slice(5, 10)))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await callAmazonPlannerApi({
+      listingText: 'Verified product.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT, mode: 'etsy', etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses' }),
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).text.format.schema.properties.imagePlans.items.properties.slot.enum).toEqual(['E05'])
+    expect(result.plans.map((plan) => plan.prompt)).toEqual(payload.imagePlans.slice(0, 10).map((plan) => plan.prompt))
+  })
+
+  it('repairs the minimum two shots for deficient scene coverage without regenerating the five', async () => {
+    const payload = createEtsyPayload()
+    const first = payload.imagePlans.slice(0, 5).map((plan, index) => ({
+      ...plan, prompt: `Initial scene assignment ${index}.`,
+      photographyDecision: { ...plan.photographyDecision, sceneFamily: TEST_SCENE_FAMILIES[index < 2 ? 0 : 2] },
+    }))
+    const response = (imagePlans: typeof payload.imagePlans) => new Response(JSON.stringify({ output_text: JSON.stringify({ ...payload, imagePlans }) }), { headers: { 'Content-Type': 'application/json' } })
+    const fetchMock = vi.fn().mockResolvedValueOnce(response(first))
+      .mockResolvedValueOnce(response(payload.imagePlans.slice(3, 5)))
+      .mockResolvedValueOnce(response(payload.imagePlans.slice(5, 10)))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await callAmazonPlannerApi({
+      listingText: 'Verified product.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT, mode: 'etsy', etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses' }),
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).text.format.schema.properties.imagePlans.items.properties.slot.enum).toEqual(['E04', 'E05'])
+    expect(result.plans.slice(0, 3).map((plan) => [plan.prompt, plan.photographyDecision])).toEqual(first.slice(0, 3).map((plan) => [plan.prompt, plan.photographyDecision]))
+  })
+
+  it.each(['rate-limit', 'network', 'cancel'] as const)('does not restart either group when targeted repair encounters %s', async (failure) => {
+    const payload = createEtsyPayload()
+    const controller = new AbortController()
+    const second = payload.imagePlans.slice(5, 10).map((plan) => plan.slot === 'E08'
+      ? { ...plan, photographyDecision: payload.imagePlans[1]!.photographyDecision } : plan)
+    const response = (imagePlans: typeof payload.imagePlans) => new Response(JSON.stringify({ output_text: JSON.stringify({ ...payload, imagePlans }) }), { headers: { 'Content-Type': 'application/json' } })
+    const fetchMock = vi.fn().mockResolvedValueOnce(response(payload.imagePlans.slice(0, 5)))
+      .mockResolvedValueOnce(response(second))
+      .mockImplementationOnce((_url, init) => {
+        if (failure === 'rate-limit') return Promise.resolve(new Response('upstream rate limit', { status: 429 }))
+        if (failure === 'network') return Promise.reject(new TypeError('Failed to fetch'))
+        return new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true })
+          controller.abort(new DOMException('Stopped by user', 'AbortError'))
+        })
+      })
+    vi.stubGlobal('fetch', fetchMock)
+    const promise = callAmazonPlannerApi({
+      listingText: 'Verified product.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT, mode: 'etsy', etsyShotGroup: 'original', signal: controller.signal,
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses' }),
+    })
+    if (failure === 'cancel') await expect(promise).rejects.toMatchObject({ name: 'AbortError' })
+    else await expect(promise).rejects.toThrow(failure === 'rate-limit' ? 'HTTP 429' : 'Failed to fetch')
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('corrects invalid category metadata inside a replanned shot without rewriting its new photographic content', async () => {
+    const payload = createEtsyPayload()
+    const second = payload.imagePlans.slice(5, 10).map((plan) => plan.slot === 'E08'
+      ? { ...plan, prompt: 'Duplicate E02.', photographyDecision: payload.imagePlans[1]!.photographyDecision } : plan)
+    const response = (value: unknown) => new Response(JSON.stringify({ output_text: JSON.stringify(value) }), { headers: { 'Content-Type': 'application/json' } })
+    const fetchMock = vi.fn().mockResolvedValueOnce(response({ ...payload, imagePlans: payload.imagePlans.slice(0, 5) }))
+      .mockResolvedValueOnce(response({ ...payload, imagePlans: second }))
+      .mockResolvedValueOnce(response({ imagePlans: [{ ...payload.imagePlans[7]!, photographyDecision: { ...payload.imagePlans[7]!.photographyDecision, shotScale: 'hero' } }] }))
+      .mockResolvedValueOnce(response({ categoryCorrections: { E08: { shotScale: 'full-product' } } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await callAmazonPlannerApi({
+      listingText: 'Verified product.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT, mode: 'etsy', etsyShotGroup: 'original',
+      referenceImageDataUrls: ['data:image/jpeg;base64,product-reference'],
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses' }),
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(result.plans[7]!.prompt).toBe(payload.imagePlans[7]!.prompt)
+    expect(result.plans[7]!.photographyDecision).toEqual(payload.imagePlans[7]!.photographyDecision)
+    const classification = JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))
+    expect(classification.text.format.schema.required).toEqual(['categoryCorrections'])
+    expect(JSON.stringify(classification.input)).not.toContain('product-reference')
+  })
+
+  it.each(['chat', 'responses'] as const)('replans only E12 in the additional group, preserving four other shots and the original ten in %s', async (apiMode) => {
+    const payload = createEtsyPayload()
+    const original = payload.imagePlans.slice(0, 10)
+    const snapshot = JSON.stringify(original)
+    const additional = payload.imagePlans.slice(10).map((plan) => plan.slot === 'E12'
+      ? { ...plan, prompt: 'Duplicate E02.', photographyDecision: payload.imagePlans[1]!.photographyDecision } : plan)
+    const response = (imagePlans: typeof payload.imagePlans) => new Response(JSON.stringify(apiMode === 'chat'
+      ? { choices: [{ message: { content: JSON.stringify({ ...payload, imagePlans }) } }] }
+      : { output_text: JSON.stringify({ ...payload, imagePlans }) }), { headers: { 'Content-Type': 'application/json' } })
+    const fetchMock = vi.fn().mockResolvedValueOnce(response(additional)).mockResolvedValueOnce(response([payload.imagePlans[11]!]))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await callAmazonPlannerApi({
+      listingText: 'Verified product.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT, mode: 'etsy', etsyShotGroup: 'additional',
+      etsyCampaignContext: { visualDna: payload.visualDna, photographyAnalysis: payload.photographyAnalysis, plans: original },
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode }),
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(original)).toBe(snapshot)
+    expect(result.plans.map((plan) => [plan.prompt, plan.photographyDecision])).toEqual(payload.imagePlans.slice(10).map((plan) => [plan.prompt, plan.photographyDecision]))
+    for (const plan of result.plans) expect(plan.planMarkdown.split('新增固定镜头要求').length - 1).toBe(1)
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))
+    if (apiMode === 'responses') expect(body.text.format.schema.properties.imagePlans.items.properties.slot.enum).toEqual(['E12'])
+    else expect(body.messages[0].content).toContain('exactly E12')
+  })
+
+  it('bounds unsuccessful shot replanning to three requests and preserves the first-half checkpoint', async () => {
+    const payload = createEtsyPayload()
+    const duplicate = { ...payload.imagePlans[7]!, photographyDecision: payload.imagePlans[1]!.photographyDecision }
+    const response = (imagePlans: typeof payload.imagePlans) => new Response(JSON.stringify({ output_text: JSON.stringify({ ...payload, imagePlans }) }), { headers: { 'Content-Type': 'application/json' } })
+    let attempt = 0
+    const fetchMock = vi.fn().mockResolvedValueOnce(response(payload.imagePlans.slice(0, 5)))
+      .mockResolvedValueOnce(response(payload.imagePlans.slice(5, 10).map((plan) => plan.slot === 'E08' ? duplicate : plan)))
+      .mockImplementation(() => Promise.resolve(response([{ ...duplicate, prompt: `Still duplicated photographic assignment ${++attempt}.` }])))
+    vi.stubGlobal('fetch', fetchMock)
+    const common = {
+      listingText: 'Verified product.', baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT, mode: 'etsy' as const, etsyShotGroup: 'original' as const,
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'responses' }),
+    }
+    await expect(callAmazonPlannerApi(common)).rejects.toThrow('镜头定向纠错已达 3 次')
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+    fetchMock.mockReset().mockResolvedValueOnce(response(payload.imagePlans.slice(5, 10)))
+    const result = await callAmazonPlannerApi(common)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(result.plans.slice(0, 5).map((plan) => plan.prompt)).toEqual(payload.imagePlans.slice(0, 5).map((plan) => plan.prompt))
   })
 
   it('stops classification and does not start the remaining half after cancellation', async () => {
@@ -1018,7 +1212,7 @@ describe('callAmazonPlannerApi', () => {
       mode: 'etsy', etsyShotGroup: 'original',
       profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' }),
     })).rejects.toThrow('差异检查')
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).input[0].content[0].text).toContain('差异检查')
   })
 
@@ -1295,6 +1489,7 @@ describe('callAmazonPlannerApi', () => {
       ...fullPayload,
       imagePlans: fullPayload.imagePlans.slice(ETSY_ORIGINAL_SHOT_COUNT).map((plan, index) => ({
         ...plan,
+        prompt: `Repeated composition ${index + 1} that needs genuine replanning.`,
         photographyDecision: createPhotographyDecision(index),
       })),
     }
@@ -1335,9 +1530,9 @@ describe('callAmazonPlannerApi', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(fetchMock.mock.calls.every(([, init]) => JSON.parse(String(init?.body)).stream)).toBe(true)
-    expect(repairInput).toContain('Locked existing campaign context')
-    expect(repairInput).toContain('complete fifteen-shot campaign must have at least 5 angleFamily values')
-    expect(onProgress).toHaveBeenCalledWith('Etsy 新增5张自动纠错：等待服务商响应')
+    expect(repairInput).toContain('Locked Visual DNA and photography analysis')
+    expect(repairInput).toContain('"field":"angleFamily","minimum":5')
+    expect(onProgress.mock.calls.some(([message]) => message.includes('新增5张自动纠错 E11、E12、E13、E14、E15（1/3）'))).toBe(true)
     expect(JSON.stringify(originalPlans)).toBe(originalSnapshot)
     expect(additional.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(ETSY_ORIGINAL_SHOT_COUNT))
     expect(additional.plans.map((plan) => [plan.prompt, plan.photographyDecision])).toEqual(

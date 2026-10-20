@@ -1065,8 +1065,10 @@ function normalizeDiversityKey(value: string): string {
   return value.toLocaleLowerCase().replace(/[^a-z0-9]+/g, '-')
 }
 
-function assertEtsyPhotographyDiversity(plans: Array<{ slot: string; photographyDecision?: EtsyPhotographyCategories }>): void {
-  const decisions = plans.map((plan) => plan.photographyDecision).filter((item): item is EtsyPhotographyCategories => Boolean(item))
+type EtsyDiversityPlan = { slot: string; photographyDecision?: EtsyPhotographyCategories }
+
+function inspectEtsyPhotographyDiversity(plans: EtsyDiversityPlan[]) {
+  const classified = plans.filter((plan): plan is EtsyDiversityPlan & { photographyDecision: EtsyPhotographyCategories } => Boolean(plan.photographyDecision))
   const partialMinimums = plans.length === ETSY_ORIGINAL_SHOT_COUNT ? [4, 3, 3, 3, 4] : [3, 3, 3, 3, 4]
   const minimums: Array<[EtsyPhotographyCategory, number, string]> = [
     ['angleFamily', plans.length === ETSY_SHOT_COUNT ? 5 : partialMinimums[0], '角度类型'],
@@ -1076,31 +1078,36 @@ function assertEtsyPhotographyDiversity(plans: Array<{ slot: string; photography
     ['sceneFamily', plans.length === ETSY_SHOT_COUNT ? 5 : partialMinimums[4], '场景类型'],
   ]
   const failures = minimums.flatMap(([field, minimum, label]) => {
-    const uniqueCount = new Set(decisions.map((decision) => normalizeDiversityKey(decision[field]))).size
+    const uniqueCount = new Set(classified.map((plan) => normalizeDiversityKey(plan.photographyDecision[field]))).size
     return uniqueCount >= minimum ? [] : [`${label}仅 ${uniqueCount} 类（至少 ${minimum} 类）`]
   })
 
-  for (let index = 0; index < decisions.length; index += 1) {
-    const current = decisions[index]
-    for (let compareIndex = index + 1; compareIndex < decisions.length; compareIndex += 1) {
-      const other = decisions[compareIndex]
+  const duplicates: Array<[string, string]> = []
+  for (let index = 0; index < classified.length; index += 1) {
+    const current = classified[index]!
+    for (let compareIndex = index + 1; compareIndex < classified.length; compareIndex += 1) {
+      const other = classified[compareIndex]!
       const repeatedCore = ['angleFamily', 'shotScale', 'lightingFamily', 'sceneFamily']
-        .filter((field) => normalizeDiversityKey(current[field as EtsyPhotographyCategory]) === normalizeDiversityKey(other[field as EtsyPhotographyCategory]))
-      if (repeatedCore.length >= 4) failures.push(`${plans[index]?.slot} 与 ${plans[compareIndex]?.slot} 的角度、景别、布光和场景完全重复`)
+        .filter((field) => normalizeDiversityKey(current.photographyDecision[field as EtsyPhotographyCategory]) === normalizeDiversityKey(other.photographyDecision[field as EtsyPhotographyCategory]))
+      if (repeatedCore.length >= 4) {
+        duplicates.push([current.slot, other.slot])
+        failures.push(`${current.slot} 与 ${other.slot} 的角度、景别、布光和场景完全重复`)
+      }
     }
   }
-
-  if (failures.length) {
-    throw new Error(`Etsy 摄影自动判断未通过 ${plans.length} 镜头差异检查：${failures.slice(0, 5).join('；')}`)
-  }
+  return { minimums, duplicates, failures, message: `Etsy 摄影自动判断未通过 ${plans.length} 镜头差异检查：${failures.slice(0, 5).join('；')}` }
 }
 
-function normalizeEtsyPlannerApiPayload(payload: PlannerApiPayload, marketplaceId: AmazonMarketplaceId, fallbackTitle = '', slots = getEtsyImageSlots()): PlannerApiResult {
-  const parsed = normalizeParsedListing(payload, fallbackTitle)
+function assertEtsyPhotographyDiversity(plans: EtsyDiversityPlan[]): void {
+  const report = inspectEtsyPhotographyDiversity(plans)
+  if (report.failures.length) throw new Error(report.message)
+}
+
+function normalizeEtsyPlans(payload: PlannerApiPayload, slots: string[]): AmazonImagePlan[] {
   const rawPlans = Array.isArray(payload.imagePlans) ? payload.imagePlans : []
   if (rawPlans.length !== slots.length) throw new Error(`Etsy 策划结果不是 ${slots.length} 张图`)
   const allSlots = getEtsyImageSlots()
-  const plans = slots.map((slot) => {
+  return slots.map((slot) => {
     const matching = rawPlans.filter((plan) => plan?.slot === slot)
     if (matching.length !== 1) throw new Error(`Etsy 策划结果缺少或重复镜头 ${slot}`)
     const index = allSlots.indexOf(slot)
@@ -1111,6 +1118,11 @@ function normalizeEtsyPlannerApiPayload(payload: PlannerApiPayload, marketplaceI
       photographyDecision: normalizeEtsyPhotographyDecision(normalizedPlan),
     }, index)
   })
+}
+
+function normalizeEtsyPlannerApiPayload(payload: PlannerApiPayload, marketplaceId: AmazonMarketplaceId, fallbackTitle = '', slots = getEtsyImageSlots()): PlannerApiResult {
+  const parsed = normalizeParsedListing(payload, fallbackTitle)
+  const plans = normalizeEtsyPlans(payload, slots)
   assertEtsyPhotographyDiversity(plans)
 
   const etsyVisualDna = normalizeEtsyVisualDna(payload, parsed)
@@ -1860,6 +1872,104 @@ async function repairEtsyPhotographyCategories(
   throw new Error('Etsy 分类校正未完成')
 }
 
+async function repairEtsyShotDiversity(
+  initialPayload: PlannerApiPayload,
+  stage: EtsyPlannerRequestStage,
+  lockedPlans: AmazonImagePlan[],
+  request: (stage: EtsyPlannerRequestStage) => Promise<PlannerResponseTextResult>,
+): Promise<PlannerApiPayload> {
+  let payload = initialPayload
+  let feedback = ''
+  const attemptedSlots = new Set<string>()
+  for (let round = 0; round <= 3; round += 1) {
+    const plans = normalizeEtsyPlans(payload, stage.slots)
+    const combined = mergeEtsyShotGroups(lockedPlans, plans)
+    const scopes = [plans]
+    if ((combined.length === ETSY_ORIGINAL_SHOT_COUNT || combined.length === ETSY_SHOT_COUNT)
+      && combined.every((plan) => plan.photographyDecision)) scopes.push(combined)
+    const reports = scopes.map(inspectEtsyPhotographyDiversity)
+    const failures = reports.filter((report) => report.failures.length)
+    if (!failures.length) return payload
+    const failureMessage = failures.map((report) => report.message).join('\n')
+    if (round === 3) throw new Error(`${failureMessage}\n镜头定向纠错已达 3 次：${feedback || '服务商仍未返回差异充分的拍摄方案'}。已保留其他合格镜头。`)
+
+    // At most five editable shots: search all subsets to preserve as many good shots as possible.
+    const candidates = Array.from({ length: (1 << stage.slots.length) - 1 }, (_, index) =>
+      stage.slots.slice().reverse().filter((_, bit) => ((index + 1) & (1 << bit)) !== 0),
+    ).sort((a, b) => a.length - b.length
+      || a.filter((slot) => !attemptedSlots.has(slot)).length - b.filter((slot) => !attemptedSlots.has(slot)).length)
+    const targets = candidates.find((slots) => scopes.every((scope, index) => {
+      const report = reports[index]!
+      if (report.duplicates.some(([a, b]) => !slots.includes(a) && !slots.includes(b))) return false
+      const retained = scope.filter((plan) => !slots.includes(plan.slot))
+      return report.minimums.every(([field, minimum]) =>
+        new Set(retained.map((plan) => plan.photographyDecision![field])).size + slots.length >= minimum,
+      )
+    }))
+    if (!targets) throw new Error(`${failureMessage}\n冲突位于已锁定的另一组镜头，请重新策划该组；不会改动另一组方案。`)
+    const slots = stage.slots.filter((slot) => targets.includes(slot))
+    slots.forEach((slot) => attemptedSlots.add(slot))
+    const repairStage: EtsyPlannerRequestStage = {
+      name: `${stage.name}自动纠错 ${slots.join('、')}（${round + 1}/3）`,
+      slots,
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: { imagePlans: createEtsyPlannerSchema(slots, { conciseSummary: true }).properties.imagePlans },
+        required: ['imagePlans'],
+      },
+      instructions: [
+        stage.instructions,
+        `TARGETED REPAIR OVERRIDE: return only imagePlans for exactly ${slots.join(', ')}. Do not return campaign fields or any other shots.`,
+        'Keep the locked product identity, verified facts, original reference fidelity, and all professional photography quality requirements. Preserve each slot\'s assigned purpose, including the fixed E11-E15 briefs.',
+        'Actually redesign only the conflicting photographic assignments: choose product-supported viewpoints, composition, optics, material-specific lighting and appropriate scenes. Update the full English prompt and detailed photographyDecision together. Never merely relabel categories to pass validation.',
+        'Keep the complete English image-generation prompt and all 15 photographyDecision fields detailed. Do not simplify the photographic quality, invent unseen product geometry, add accessories, or change image dimensions or quality.',
+        'Every untouched shot is immutable. Check both this five-shot group and the entire supplied campaign against the coverage requirements and forbidden combinations before returning JSON.',
+      ].join('\n'),
+      inputText: [
+        stage.inputText,
+        `Validation failures: ${failureMessage}`,
+        `Shots to replan: ${JSON.stringify(payload.imagePlans!.filter((plan) => slots.includes(plan.slot!)))}`,
+        `Locked untouched shots: ${JSON.stringify(combined.filter((plan) => !slots.includes(plan.slot)).map((plan) => ({ slot: plan.slot, label: plan.label, photographyDecision: plan.photographyDecision })))}`,
+        `Coverage requirements: ${JSON.stringify(scopes.map((scope, index) => ({
+          scope: scope.map((plan) => plan.slot),
+          categories: reports[index]!.minimums.map(([field, minimum]) => ({
+            field, minimum,
+            retainedValues: [...new Set(scope.filter((plan) => !slots.includes(plan.slot)).map((plan) => plan.photographyDecision![field]))],
+          })),
+        })))}`,
+        feedback ? `Previous repair error: ${feedback}` : '',
+      ].filter(Boolean).join('\n\n'),
+    }
+    // Transport errors and cancellation propagate without triggering another paid request.
+    const response = await request(repairStage)
+    let replacement: PlannerApiPayload
+    try {
+      replacement = parsePlannerPayload(response.text)
+      assertEtsyStageContent(replacement, slots)
+    } catch (error) {
+      feedback = error instanceof Error ? error.message : String(error)
+      continue
+    }
+    replacement = await repairEtsyPhotographyCategories(replacement, repairStage, request)
+    try {
+      normalizeEtsyPlans(replacement, slots)
+      for (const plan of replacement.imagePlans!) {
+        const old = payload.imagePlans!.find((item) => item.slot === plan.slot)!
+        if (normalizePlannerText(plan.prompt) === normalizePlannerText(old.prompt)) {
+          throw new Error(`${plan.slot} 必须同步调整实际摄影提示词，不能只修改分类或原样返回`)
+        }
+      }
+    } catch (error) {
+      feedback = error instanceof Error ? error.message : String(error)
+      continue
+    }
+    const replacements = new Map(replacement.imagePlans!.map((plan) => [plan.slot, plan]))
+    payload = { ...payload, imagePlans: payload.imagePlans!.map((plan) => replacements.get(plan.slot) ?? plan) }
+    feedback = ''
+  }
+  throw new Error('Etsy 镜头定向纠错未完成')
+}
+
 async function requestEtsyPlannerStage(options: {
   name: string
   signal?: AbortSignal
@@ -1928,7 +2038,7 @@ async function callBatchedEtsyPlanner(options: {
     request: (signal, onActivity) => options.request(stage, signal, onActivity),
   })
 
-  const runStage = async <T,>(stage: EtsyPlannerRequestStage, validate: (payload: PlannerApiPayload) => T): Promise<T> => {
+  const runStage = async <T,>(stage: EtsyPlannerRequestStage, validate: (payload: PlannerApiPayload) => T, lockedPlans: AmazonImagePlan[]): Promise<T> => {
     let previousOutput = ''
     let validationError = ''
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1953,6 +2063,7 @@ async function callBatchedEtsyPlanner(options: {
       }
       // A network error must propagate, not trigger another costly full-plan request.
       payload = await repairEtsyPhotographyCategories(payload, stage, requestStage)
+      payload = await repairEtsyShotDiversity(payload, stage, lockedPlans, requestStage)
       try {
         return validate(payload)
       } catch (error) {
@@ -2006,7 +2117,7 @@ async function callBatchedEtsyPlanner(options: {
         const normalized = normalizeEtsyPlannerApiPayload(payload, options.marketplaceId, options.fallbackTitle, group)
         if (previous) assertEtsyPhotographyDiversity([...previous.plans, ...normalized.plans])
         return normalized
-      })
+      }, previous?.plans ?? [])
       results.push(result)
       if (groupIndex === 0) {
         etsyOriginalCheckpoint = { key: options.checkpointKey, savedAt: Date.now(), result }
@@ -2222,9 +2333,9 @@ export async function callAmazonPlannerApi(options: {
     })
   }
 
-  const requestResult = (repair?: { previousOutput: string; errorMessage: string }) => {
+  const requestResult = (repair?: { previousOutput: string; errorMessage: string }, stage?: EtsyPlannerRequestStage) => {
     const read = async (signal?: AbortSignal, onActivity?: (characters?: number) => void) => {
-      const response = await request(repair, undefined, signal)
+      const response = await request(repair, stage, signal)
       if (!response.ok) {
         const message = await getApiErrorMessage(response)
         const failure = `HTTP ${response.status}: ${message}`
@@ -2234,7 +2345,7 @@ export async function callAmazonPlannerApi(options: {
     }
     return mode === 'etsy' && etsyShotGroup === 'additional'
       ? requestEtsyPlannerStage({
-        name: repair ? '新增5张自动纠错' : '新增5张',
+        name: stage?.name ?? (repair ? '新增5张自动纠错' : '新增5张'),
         signal: options.signal,
         onProgress: options.onProgress,
         request: read,
@@ -2242,6 +2353,35 @@ export async function callAmazonPlannerApi(options: {
       : read(options.signal)
   }
   const responseResult = await requestResult()
+  if (mode === 'etsy' && etsyShotGroup === 'additional') {
+    const stage: EtsyPlannerRequestStage = {
+      name: '新增5张', slots: etsySlots, inputText, schema, fullPlan: true,
+      instructions: buildPlannerInstructions(options.baseDraft, mode, aPlusType, {
+        textOnlyReferenceGuard: isDeepSeekPlannerProfile, marketplaceId,
+        etsySlots, etsyPartial: true, etsyLockedCampaign: Boolean(options.etsyCampaignContext),
+      }),
+    }
+    let payload: PlannerApiPayload
+    try {
+      payload = parsePlannerPayload(responseResult.text)
+      assertEtsyStageContent(payload, etsySlots)
+    } catch (error) {
+      const validationMessage = error instanceof Error ? error.message : String(error)
+      const repaired = await requestResult({ previousOutput: responseResult.text, errorMessage: validationMessage })
+      try {
+        payload = parsePlannerPayload(repaired.text)
+        assertEtsyStageContent(payload, etsySlots)
+      } catch (repairError) {
+        throw new Error(`${validationMessage}\n\n自动纠错后仍未通过：${repairError instanceof Error ? repairError.message : String(repairError)}`)
+      }
+    }
+    const requestStage = (repairStage: EtsyPlannerRequestStage) => requestResult(undefined, repairStage)
+    payload = await repairEtsyPhotographyCategories(payload, stage, requestStage)
+    const lockedPlans = (options.etsyCampaignContext?.plans ?? []).filter((plan) => !etsySlots.includes(plan.slot))
+    payload = await repairEtsyShotDiversity(payload, stage, lockedPlans, requestStage)
+    options.signal?.throwIfAborted()
+    return { ...normalizeEtsyPlannerApiPayload(payload, marketplaceId, fallbackTitle, etsySlots), etsyShotGroup }
+  }
   if (mode === 'etsy') {
     const normalizeEtsyResult = (text: string): PlannerApiResult => {
       const result = normalizeEtsyPlannerApiPayload(parsePlannerPayload(text), marketplaceId, fallbackTitle, etsySlots)
