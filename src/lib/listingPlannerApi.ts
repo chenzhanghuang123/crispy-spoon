@@ -632,6 +632,8 @@ function createPlannerStreamCollector(requireCompletion: boolean, onActivity?: (
   let webResearchUsed = false
   let sawChatDelta = false
   let chatCompleted = false
+  let chatFinishReason = ''
+  let streamDone = false
   let sawResponsesDelta = false
   let responsesCompleted = false
 
@@ -641,7 +643,10 @@ function createPlannerStreamCollector(requireCompletion: boolean, onActivity?: (
     const choices = Array.isArray(event.choices) ? event.choices : []
     for (const choice of choices) {
       if (!isRecordValue(choice) || (typeof choice.index === 'number' && choice.index !== 0)) continue
-      if (choice.finish_reason === 'stop') chatCompleted = true
+      if (typeof choice.finish_reason === 'string' && choice.finish_reason) {
+        chatFinishReason = choice.finish_reason
+        chatCompleted = chatFinishReason === 'stop'
+      }
       if (!isRecordValue(choice.delta)) continue
       sawChatDelta = true
       // Chat fragments may be only a space; trimming them changes the prompt.
@@ -674,7 +679,9 @@ function createPlannerStreamCollector(requireCompletion: boolean, onActivity?: (
   }
 
   const result = (): PlannerResponseTextResult => {
-    if (requireCompletion && ((sawChatDelta && !chatCompleted) || (sawResponsesDelta && !responsesCompleted))) {
+    // Some Chat-compatible relays send [DONE] without a separate finish_reason chunk.
+    const chatHasCompletion = chatCompleted || (streamDone && !chatFinishReason)
+    if (requireCompletion && ((sawChatDelta && !chatHasCompletion) || (sawResponsesDelta && !responsesCompleted))) {
       throw new Error('AI 策划流式响应中途结束，未收到完整完成标记。请重试；若反复发生，请联系服务商检查流式连接和上游渠道。')
     }
     return {
@@ -682,7 +689,7 @@ function createPlannerStreamCollector(requireCompletion: boolean, onActivity?: (
       webResearchUsed,
     }
   }
-  return { onEvent, result }
+  return { onEvent, onDone: () => { streamDone = true }, result }
 }
 
 function assertPlannerOutputComplete(payload: unknown): void {
@@ -705,13 +712,13 @@ function assertPlannerOutputComplete(payload: unknown): void {
 
 async function readPlannerTextFromSseResponse(response: Response, requireCompletion: boolean, onActivity?: (characters?: number) => void): Promise<PlannerResponseTextResult> {
   const collector = createPlannerStreamCollector(requireCompletion, onActivity)
-  await readJsonServerSentEvents(response, collector.onEvent)
+  await readJsonServerSentEvents(response, collector.onEvent, requireCompletion ? { onDone: collector.onDone, stopOnDone: true } : undefined)
   return collector.result()
 }
 
 async function readPlannerTextFromSseText(rawText: string, requireCompletion: boolean, onActivity?: (characters?: number) => void): Promise<PlannerResponseTextResult> {
   const collector = createPlannerStreamCollector(requireCompletion, onActivity)
-  await readJsonServerSentEventText(rawText, collector.onEvent)
+  await readJsonServerSentEventText(rawText, collector.onEvent, requireCompletion ? { onDone: collector.onDone, stopOnDone: true } : undefined)
   return collector.result()
 }
 

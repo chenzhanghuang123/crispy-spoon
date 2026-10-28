@@ -533,11 +533,11 @@ function createEtsyOutlinePayload(payload: ReturnType<typeof createEtsyPayload>,
   }
 }
 
-function createPlannerStreamResponse(events: Record<string, unknown>[], contentType = 'text/event-stream') {
+function createPlannerStreamResponse(events: Record<string, unknown>[], contentType = 'text/event-stream', includeDone = true) {
   const data = new TextEncoder().encode([
     ': keep-alive',
     ...events.map((event) => `data: ${JSON.stringify(event)}`),
-    'data: [DONE]',
+    ...(includeDone ? ['data: [DONE]'] : []),
     '',
   ].join('\r\n\r\n'))
   return new Response(new ReadableStream<Uint8Array>({
@@ -1808,7 +1808,7 @@ describe('callAmazonPlannerApi', () => {
     ['responses output limit', () => [{ type: 'response.incomplete', response: { status: 'incomplete' } }], '输出未完成'],
     ['upstream stream failure', () => [{ error: { message: 'upstream stream disconnected' } }], 'upstream stream disconnected'],
   ] as const)('rejects incomplete Etsy output without a repair request: %s', async (_label, createEvents, message) => {
-    const fetchMock = vi.fn().mockImplementation(async () => createPlannerStreamResponse(createEvents(JSON.stringify(createEtsyPayload()))))
+    const fetchMock = vi.fn().mockImplementation(async () => createPlannerStreamResponse(createEvents(JSON.stringify(createEtsyPayload())), 'text/event-stream', false))
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(callAmazonPlannerApi({
@@ -1817,6 +1817,68 @@ describe('callAmazonPlannerApi', () => {
       mode: 'etsy',
       profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'chat' }),
     })).rejects.toThrow(message)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['text/event-stream', 'application/json'])('accepts a Chat [DONE] terminator without finish_reason for both Etsy groups: %s', async (contentType) => {
+    const fullPayload = createEtsyPayload()
+    const batches = [fullPayload.imagePlans.slice(0, 5), fullPayload.imagePlans.slice(5, 10), fullPayload.imagePlans.slice(10)]
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      const payload = { ...fullPayload, imagePlans: batches.shift()! }
+      return createPlannerStreamResponse([
+        { choices: [{ index: 0, delta: { role: 'assistant' } }] },
+        { choices: [{ index: 0, delta: { content: JSON.stringify(payload) }, finish_reason: null }] },
+        { choices: [], usage: { completion_tokens: 1000 } },
+      ], contentType)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const common = {
+      listingText: 'Hand-thrown seafoam ceramic mug.',
+      baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy' as const,
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'chat' }),
+    }
+
+    const original = await callAmazonPlannerApi({ ...common, etsyShotGroup: 'original' })
+    const additional = await callAmazonPlannerApi({ ...common, etsyShotGroup: 'additional' })
+
+    expect(original.plans.map((plan) => plan.prompt)).toEqual(fullPayload.imagePlans.slice(0, 10).map((plan) => plan.prompt))
+    expect(additional.plans.map((plan) => plan.prompt)).toEqual(fullPayload.imagePlans.slice(10).map((plan) => plan.prompt))
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls.every(([, init]) => JSON.parse(String(init.body)).stream === true)).toBe(true)
+  })
+
+  it('does not accept an explicit unsupported Chat finish reason merely because [DONE] follows', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => createPlannerStreamResponse([
+      { choices: [{ index: 0, delta: { content: JSON.stringify(createEtsyPayload()) }, finish_reason: 'tool_calls' }] },
+    ]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug.',
+      baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy',
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: 'chat' }),
+    })).rejects.toThrow('未收到完整完成标记')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['chat length', 'chat content filter', 'responses incomplete', 'responses missing completed'])('keeps completion safeguards when [DONE] follows: %s', async (scenario) => {
+    const output = JSON.stringify(createEtsyPayload())
+    const events = scenario.startsWith('chat')
+      ? [{ choices: [{ index: 0, delta: { content: output }, finish_reason: scenario === 'chat length' ? 'length' : 'content_filter' }] }]
+      : scenario === 'responses incomplete'
+        ? [{ type: 'response.incomplete', response: { status: 'incomplete' } }]
+        : [{ type: 'response.output_text.delta', delta: output }]
+    const fetchMock = vi.fn().mockImplementation(async () => createPlannerStreamResponse(events))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug.',
+      baseDraft: DEFAULT_AMAZON_PROMPT_DRAFT,
+      mode: 'etsy',
+      profile: createDefaultOpenAIProfile({ apiKey: 'test-key', apiMode: scenario.startsWith('chat') ? 'chat' : 'responses' }),
+    })).rejects.toThrow(scenario === 'chat length' ? '长度限制' : scenario === 'chat content filter' ? '内容过滤' : scenario === 'responses incomplete' ? '输出未完成' : '未收到完整完成标记')
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 

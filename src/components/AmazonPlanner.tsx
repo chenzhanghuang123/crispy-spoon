@@ -268,6 +268,7 @@ function getPlannerFailureDetail(err: unknown, isEtsyImageMode = false): string 
   const lower = message.toLowerCase()
   const hints: string[] = []
   const hasNoAvailableChannel = /无可用渠道|no available channel|distributor/.test(lower)
+  const isInterruptedEtsyStream = isEtsyImageMode && message.includes('AI 策划流式响应中途结束')
 
   if (/401|invalid api key|incorrect api key|unauthorized|forbidden|权限|认证|鉴权/.test(lower)) {
     hints.push('请检查 AI 策划配置里的 API Key 是否正确，并确认该 Key 有所选聊天/策划接口权限。')
@@ -283,7 +284,7 @@ function getPlannerFailureDetail(err: unknown, isEtsyImageMode = false): string 
   if (/json_schema|schema|structured|text\.format|response_format|strict/.test(lower)) {
     hints.push('该接口可能不支持当前 JSON 输出参数；Chat Completions 需要支持 response_format=json_object。')
   }
-  if (/failed to fetch|network|cors|load failed|连接|网络|跨域/.test(lower)) {
+  if (!isInterruptedEtsyStream && /failed to fetch|network|cors|load failed|连接|网络|跨域/.test(lower)) {
     hints.push('浏览器未能连接到策划接口；请检查网络、跨域设置，或确认部署端 API 代理配置。')
   }
   if (/\b(?:524|504)\b/.test(lower)) {
