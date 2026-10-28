@@ -369,7 +369,7 @@ export interface CustomStyleReference {
 export interface AmazonPlannerSession {
   id: string
   title: string
-  mode: 'listing' | 'aplus' | 'etsy' | 'etsy-listing'
+  mode: 'listing' | 'aplus' | 'etsy' | 'etsy-upgraded' | 'etsy-listing'
   marketplaceId?: AmazonMarketplaceId
   aPlusType: 'standard' | 'standard-large' | 'premium' | 'mobile'
   resolution: '2k' | '4k'

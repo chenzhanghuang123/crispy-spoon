@@ -1246,7 +1246,7 @@ function buildListingPlannerInstructions(baseDraft: AmazonPromptDraft, listingIm
   ].filter(Boolean).join('\n')
 }
 
-function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft, stage?: { outline?: boolean; slots?: string[]; partial?: boolean; lockedCampaign?: boolean }) {
+function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft, stage?: { outline?: boolean; slots?: string[]; partial?: boolean; lockedCampaign?: boolean; photographyUpgrade?: boolean }) {
   const slots = getEtsyImageSlots()
   const requestedSlots = stage?.slots ?? slots
   const isPartial = Boolean(stage?.partial)
@@ -1257,6 +1257,8 @@ function buildEtsyPlannerInstructions(baseDraft: AmazonPromptDraft, stage?: { ou
   return [
     "You are a 'World-Class Adaptive Art Director and AI Photographer' specifically tailored for Etsy sellers.",
     'Your mission is to curate a bespoke, commercially viable product photoshoot that elevates the seller brand while preserving the real product exactly.',
+    stage?.photographyUpgrade ? 'UPGRADED PHOTO ACCURACY: Seller-entered facts are authoritative for product name, material, size, function, and included items. References confirm visible appearance and geometry only; they do not prove hidden construction or material composition. Internally distinguish seller-confirmed facts, visible observations, and unknowns; never state an inference as verified. Use the exact seller product noun and function.' : '',
+    stage?.photographyUpgrade ? 'UPGRADED PHOTO REALISM: Choose viewpoints, optics, focus, and material-aware light for this product rather than applying a fixed luxury look. Preserve true color and texture scale; keep reflections, contact shadows, perspective, and depth of field physically coherent. Avoid invented wear/grain, plastic smoothing, glow, HDR, oversharpening, and CGI-like surfaces.' : '',
     'PHASE 1 — DEEP DIVE ANALYSIS & STRATEGIC PLANNING ONLY. Do not generate images in this response.',
     stage?.lockedCampaign
       ? 'PART A: Use the supplied locked Visual DNA unchanged; do not reanalyze or repeat these fields.'
@@ -1371,13 +1373,13 @@ function buildPlannerInstructions(
   baseDraft: AmazonPromptDraft,
   mode: AmazonPlannerMode,
   aPlusType: APlusContentType,
-  options: { textOnlyReferenceGuard?: boolean; listingImageCount?: number; aPlusModuleSpecs?: AmazonAPlusModuleSpec[]; marketplaceId?: AmazonMarketplaceId; etsySlots?: string[]; etsyPartial?: boolean; etsyLockedCampaign?: boolean } = {},
+  options: { textOnlyReferenceGuard?: boolean; listingImageCount?: number; aPlusModuleSpecs?: AmazonAPlusModuleSpec[]; marketplaceId?: AmazonMarketplaceId; etsySlots?: string[]; etsyPartial?: boolean; etsyLockedCampaign?: boolean; etsyPhotographyUpgrade?: boolean } = {},
 ) {
   const listingImageCount = normalizeListingImageCount(options.listingImageCount)
   const aPlusModuleSpecs = normalizeAPlusModuleSpecs(aPlusType, options.aPlusModuleSpecs)
   return [
     mode === 'etsy'
-      ? buildEtsyPlannerInstructions(baseDraft, options.etsySlots ? { slots: options.etsySlots, partial: options.etsyPartial, lockedCampaign: options.etsyLockedCampaign } : undefined)
+      ? buildEtsyPlannerInstructions(baseDraft, options.etsySlots ? { slots: options.etsySlots, partial: options.etsyPartial, lockedCampaign: options.etsyLockedCampaign, photographyUpgrade: options.etsyPhotographyUpgrade } : options.etsyPhotographyUpgrade ? { photographyUpgrade: true } : undefined)
       : mode === 'aplus'
         ? buildAPlusPlannerInstructions(baseDraft, aPlusType, aPlusModuleSpecs, options.marketplaceId)
         : buildListingPlannerInstructions(baseDraft, listingImageCount, options.marketplaceId),
@@ -1671,7 +1673,7 @@ function buildChatPlannerSystemPrompt(
   baseDraft: AmazonPromptDraft,
   mode: AmazonPlannerMode,
   aPlusType: APlusContentType,
-  options: { textOnlyReferenceGuard?: boolean; listingImageCount?: number; aPlusModuleSpecs?: AmazonAPlusModuleSpec[]; marketplaceId?: AmazonMarketplaceId; etsySlots?: string[]; etsyPartial?: boolean; etsyLockedCampaign?: boolean } = {},
+  options: { textOnlyReferenceGuard?: boolean; listingImageCount?: number; aPlusModuleSpecs?: AmazonAPlusModuleSpec[]; marketplaceId?: AmazonMarketplaceId; etsySlots?: string[]; etsyPartial?: boolean; etsyLockedCampaign?: boolean; etsyPhotographyUpgrade?: boolean } = {},
 ) {
   return [
     buildPlannerInstructions(baseDraft, mode, aPlusType, options),
@@ -2030,6 +2032,7 @@ async function callBatchedEtsyPlanner(options: {
   slots: string[]
   shotGroup: EtsyShotGroup
   checkpointKey: string
+  photographyUpgrade?: boolean
   signal?: AbortSignal
   onProgress?: (message: string) => void
   request: (stage: EtsyPlannerRequestStage, signal: AbortSignal, onActivity: (characters?: number) => void) => Promise<PlannerResponseTextResult>
@@ -2116,7 +2119,7 @@ async function callBatchedEtsyPlanner(options: {
         fullPlan: true,
         schema: groupSchema,
         instructions: [
-          buildEtsyPlannerInstructions(options.baseDraft, { slots: group, partial: true }),
+          buildEtsyPlannerInstructions(options.baseDraft, { slots: group, partial: true, photographyUpgrade: options.photographyUpgrade }),
           options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : '',
           previous ? 'Keep the campaign-level fields identical: copy the supplied locked visualDna and photographyAnalysis into their required JSON fields; do not reanalyze them. Across the combined ten shots, use at least 4 angleFamily values, 3 shotScale values, 3 lensClass values, 3 lightingFamily values, and 4 sceneFamily values. Compare the actual scenes, views, framing, and buyer purposes against the first half, not just their category IDs.' : '',
         ].filter(Boolean).join('\n'),
@@ -2154,7 +2157,7 @@ async function callBatchedEtsyPlanner(options: {
             fullPlan: true,
             schema: createEtsyPlannerSchema(splitGroup, { conciseSummary: true }),
             instructions: [
-              buildEtsyPlannerInstructions(options.baseDraft, { slots: splitGroup, partial: true }),
+              buildEtsyPlannerInstructions(options.baseDraft, { slots: splitGroup, partial: true, photographyUpgrade: options.photographyUpgrade }),
               options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : '',
               campaign ? 'Copy the locked visualDna and photographyAnalysis into the required campaign fields without changing them. Ensure the combined campaign meets the stated diversity requirements.' : '',
             ].filter(Boolean).join('\n'),
@@ -2270,6 +2273,7 @@ export async function callAmazonPlannerApi(options: {
   aPlusGenerationTier?: SizeTier
   etsyShotGroup?: EtsyShotGroup
   etsyCampaignContext?: EtsyPlannerCampaignContext
+  etsyPhotographyUpgrade?: boolean
   signal?: AbortSignal
   onProgress?: (message: string) => void
 }): Promise<PlannerApiResult> {
@@ -2322,6 +2326,7 @@ export async function callAmazonPlannerApi(options: {
       etsySlots: etsyShotGroup ? etsySlots : undefined,
       etsyPartial: Boolean(etsyShotGroup),
       etsyLockedCampaign: Boolean(options.etsyCampaignContext),
+      etsyPhotographyUpgrade: options.etsyPhotographyUpgrade,
     })
     return fetch(
       useChatCompletions
@@ -2351,6 +2356,7 @@ export async function callAmazonPlannerApi(options: {
                       etsySlots: etsyShotGroup ? etsySlots : undefined,
                       etsyPartial: Boolean(etsyShotGroup),
                       etsyLockedCampaign: Boolean(options.etsyCampaignContext),
+                       etsyPhotographyUpgrade: options.etsyPhotographyUpgrade,
                     }),
                 },
                 {
@@ -2388,6 +2394,7 @@ export async function callAmazonPlannerApi(options: {
       baseDraft: options.baseDraft, inputText, referenceImageDataUrls, model, marketplaceId,
       baseUrl: options.profile.baseUrl, apiMode: options.profile.apiMode,
       apiProxy: options.profile.apiProxy, apiKey: options.profile.apiKey,
+      ...(options.etsyPhotographyUpgrade ? { photographyUpgrade: true } : {}),
     })))
     const checkpointKey = Array.from(new Uint8Array(checkpointDigest), (value) => value.toString(16).padStart(2, '0')).join('')
     return callBatchedEtsyPlanner({
@@ -2407,6 +2414,7 @@ export async function callAmazonPlannerApi(options: {
       slots: etsySlots,
       shotGroup: etsyShotGroup,
       checkpointKey,
+      photographyUpgrade: options.etsyPhotographyUpgrade,
       signal: options.signal,
       onProgress: options.onProgress,
       request: async (stage, signal, onActivity) => {
@@ -2446,6 +2454,7 @@ export async function callAmazonPlannerApi(options: {
       instructions: buildPlannerInstructions(options.baseDraft, mode, aPlusType, {
         textOnlyReferenceGuard: isDeepSeekPlannerProfile, marketplaceId,
         etsySlots, etsyPartial: true, etsyLockedCampaign: Boolean(options.etsyCampaignContext),
+        etsyPhotographyUpgrade: options.etsyPhotographyUpgrade,
       }),
     }
     let payload: PlannerApiPayload

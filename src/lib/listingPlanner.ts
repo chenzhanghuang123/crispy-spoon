@@ -506,6 +506,8 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
   seriesStyleGuide?: string | null
   styleReferenceAttached?: boolean
   styleDensityMode?: AmazonStyleDensityMode
+  photographyUpgrade?: boolean
+  sellerProductFacts?: string
   selectedVisualStyle?: {
     label: string
     description: string
@@ -519,6 +521,14 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
   if (plan.photographyDecision) {
     const visualDnaBlock = getEtsyVisualDnaBlock(plan.seriesStyleGuide)
     const productSpecificPlan = stripLegacyEtsyAdditionalPromptBoilerplate(plan.prompt)
+    const sellerProductFacts = plan.sellerProductFacts?.trim()
+    const upgradedAccuracyRules = plan.photographyUpgrade
+      ? [
+          'FACT SOURCE ORDER: Seller-stated product facts are authoritative for names, materials, dimensions, function, included items, and claims. Original uploaded product references are authoritative for visible appearance, silhouette, proportions, component count, placement, and color appearance. AI Visual DNA and photography decisions are hypotheses, not verified facts; reject any conflict with seller facts or original references.',
+          'Do not infer solid wood, metal, acrylic, manufacturing method, hidden construction, dimensions, or function from color, gloss, reflections, or a single visual angle. When composition is unconfirmed, describe only visible appearance and light behavior; do not present a guess as fact.',
+          'REAL-PHOTOGRAPH FINISH: Keep source texture scale and natural color; reflections must correspond to actual surfaces and scene lights; contact shadows, support, perspective, and depth of field must be optically plausible. Use restrained retouching; no invented grain, plastic smoothing, cutout blur, glow, fake HDR, excessive clarity, or CGI-perfect surfaces.',
+        ].join('\n')
+      : ''
     return formatPromptBlock({
       ...plan,
       prompt: [
@@ -530,7 +540,9 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
           '- Preserve exact relative sizes and positions of every visible component. Do not enlarge the hero detail, simplify the silhouette, move decorative elements, alter spacing, or make the product more symmetrical.',
           '- The selected style reference controls only the surrounding art direction; it must never alter the product itself.',
         ].join('\n'),
-        visualDnaBlock ? `VERIFIED PRODUCT FACTS:\n${visualDnaBlock}` : '',
+        plan.photographyUpgrade ? upgradedAccuracyRules : '',
+        sellerProductFacts && plan.photographyUpgrade ? `SELLER-SUPPLIED PRODUCT FACTS:\n${sellerProductFacts}` : '',
+        visualDnaBlock ? `${plan.photographyUpgrade ? 'AI PRODUCT ANALYSIS — VERIFY AGAINST SELLER FACTS AND ORIGINAL REFERENCES' : 'VERIFIED PRODUCT FACTS'}:\n${visualDnaBlock}` : '',
         additionalBrief ? `SHOT OBJECTIVE:\n${additionalBrief.promptRequirement}` : '',
         productSpecificPlan ? `PRODUCT-SPECIFIC SCENE PLAN:\n${productSpecificPlan}` : '',
         `AI PHOTOGRAPHER'S PRODUCT-SPECIFIC CAPTURE DECISION:\n${formatEtsyPhotographyDecision(plan.photographyDecision, Boolean(additionalBrief))}`,
@@ -539,7 +551,9 @@ export function buildEtsyPlanPrompt(plan: Pick<AmazonImagePlan, 'prompt' | 'nega
           ? 'SINGLE-PHOTOGRAPH DELIVERY: Render one independent square 1:1 photograph in one continuous, physically coherent scene. Do not create a collage, grid, contact sheet, split screen, multi-panel layout, title, measurement line, label, promotional text, watermark, or UI. Judge the finished image against the original uploaded product references, not another generated image.'
           : '',
         additionalBrief ? `FINISH AND QUALITY CONTROL:\n${additionalBrief.finishRequirement}` : 'FINISH AND QUALITY CONTROL:\nWorld-class commissioned commercial photography, physically believable optics and light, accurate color management, natural contact shadows, disciplined retouching, and no generic AI-rendered appearance.',
-        'FINAL PRODUCT CHECK: product identity, geometry, component positions, dimensions, material, color, finish, and quantity must match the product references before any aesthetic consideration. The result must look like a real commissioned photograph, not a 3D render or generic AI image.',
+        plan.photographyUpgrade
+          ? 'FINAL PRODUCT CHECK: Match seller-confirmed facts and the original uploaded references. Keep uncertain properties visually neutral; never promote an AI inference into a product claim. The result must read as a real commissioned photograph, not a render.'
+          : 'FINAL PRODUCT CHECK: product identity, geometry, component positions, dimensions, material, color, finish, and quantity must match the product references before any aesthetic consideration. The result must look like a real commissioned photograph, not a 3D render or generic AI image.',
         'No marketplace badges, fake reviews, prices, coupons, sale stickers, watermarks, QR codes, or UI screenshots.',
       ].filter(Boolean).join('\n\n'),
       negativePrompt: mergeEtsyNegativePrompts(

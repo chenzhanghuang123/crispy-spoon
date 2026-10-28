@@ -189,6 +189,30 @@ describe('Amazon prompt builders', () => {
     expect(prompt).not.toContain('information-rich Amazon gallery layout')
   })
 
+  it('adds seller-fact and photorealism safeguards only to upgraded Etsy prompts', () => {
+    const plan = {
+      slot: 'E01',
+      prompt: 'Photograph the exact handmade wall clock in a quiet interior.',
+      negativePrompt: 'wrong shape, invented details',
+      photographyDecision: createPhotographyDecision(0),
+      seriesStyleGuide: 'Product Name/Type: Handmade wall clock',
+      styleReferenceAttached: false,
+      sellerProductFacts: 'Seller confirms: solid walnut wood; wall-mounted clock; 50 cm tall.',
+    }
+    const standardPrompt = buildEtsyPlanPrompt(plan)
+    const upgradedPrompt = buildEtsyPlanPrompt({ ...plan, photographyUpgrade: true })
+
+    expect(standardPrompt).toContain('VERIFIED PRODUCT FACTS')
+    expect(standardPrompt).not.toContain('FACT SOURCE ORDER')
+    expect(standardPrompt).not.toContain('SELLER-SUPPLIED PRODUCT FACTS')
+    expect(upgradedPrompt).toContain('FACT SOURCE ORDER')
+    expect(upgradedPrompt).toContain('REAL-PHOTOGRAPH FINISH')
+    expect(upgradedPrompt).toContain('SELLER-SUPPLIED PRODUCT FACTS')
+    expect(upgradedPrompt).toContain('solid walnut wood; wall-mounted clock; 50 cm tall')
+    expect(upgradedPrompt).toContain('AI PRODUCT ANALYSIS — VERIFY AGAINST SELLER FACTS AND ORIGINAL REFERENCES')
+    expect(upgradedPrompt).not.toContain('VERIFIED PRODUCT FACTS')
+  })
+
   it('uses an Etsy style as text-only photography direction without template artifacts', () => {
     const prompt = buildEtsyPlanPrompt({
       slot: 'E05',
@@ -1291,6 +1315,37 @@ describe('callAmazonPlannerApi', () => {
       profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'responses' }),
     })).rejects.toMatchObject({ name: 'AbortError' })
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('passes upgraded photo accuracy rules through Etsy Chat Completions batches', async () => {
+    clearEtsyOriginalPlannerCheckpoint()
+    const fullPayload = createEtsyPayload()
+    const response = (payload: unknown) => new Response(JSON.stringify({
+      choices: [{ message: { role: 'assistant', content: JSON.stringify(payload) }, finish_reason: 'stop' }],
+    }), { headers: { 'Content-Type': 'application/json' } })
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      const body = JSON.parse(String(init.body))
+      const systemPrompt = body.messages[0].content as string
+      const match = systemPrompt.match(/imagePlans must contain exactly 5 items in this order: (E\d+(?:, E\d+)*)\./)
+      const requestedSlots = match?.[1].split(', ') ?? []
+      return response({ ...fullPayload, imagePlans: fullPayload.imagePlans.filter((plan) => requestedSlots.includes(plan.slot)) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAmazonPlannerApi({
+      listingText: 'Handmade walnut wall clock, seller confirms solid walnut and 50 cm height.',
+      baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Walnut Wall Clock', material: 'Solid walnut wood' },
+      mode: 'etsy',
+      etsyShotGroup: 'original',
+      etsyPhotographyUpgrade: true,
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'chat' }),
+    })
+
+    const requests = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)))
+    expect(requests).toHaveLength(2)
+    expect(requests.every((request) => request.messages[0].content.includes('UPGRADED PHOTO ACCURACY'))).toBe(true)
+    expect(requests.every((request) => request.messages[0].content.includes('seller-confirmed facts, visible observations, and unknowns'))).toBe(true)
+    expect(result.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(0, ETSY_ORIGINAL_SHOT_COUNT))
   })
 
   it('does not bypass photograph diversity checks when categories are valid', async () => {

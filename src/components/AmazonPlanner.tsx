@@ -39,7 +39,7 @@ import {
   type AmazonPlannerMode,
   type AmazonStyleDensityMode,
 } from '../lib/listingPlanner'
-import { callAmazonPlannerApi, callEtsyListingDetailsApi, clearEtsyOriginalPlannerCheckpoint, formatEtsyListingDetailsMarkdown, type EtsyShotGroup, type PlannerApiResult } from '../lib/listingPlannerApi'
+import { callAmazonPlannerApi, clearEtsyOriginalPlannerCheckpoint, type EtsyShotGroup, type PlannerApiResult } from '../lib/listingPlannerApi'
 import { deleteAmazonPlannerSession, getAllAmazonPlannerSessions, putAmazonPlannerSession } from '../lib/db'
 import {
   AMAZON_MARKETPLACES,
@@ -68,8 +68,7 @@ import {
   sanitizeStyleReferenceEditState,
 } from '../lib/styleReferences'
 import { DEFAULT_PARAMS } from '../types'
-import type { AmazonPlannerSession, CustomStyleReference, EtsyListingDetails, EtsyPhotographyAnalysis, EtsyVisualDna, StyleReferenceEditState } from '../types'
-import MarkdownRenderer from './MarkdownRenderer'
+import type { AmazonPlannerSession, CustomStyleReference, EtsyPhotographyAnalysis, EtsyVisualDna, StyleReferenceEditState } from '../types'
 import { ChevronLeftIcon, ChevronRightIcon, CloseIcon, CopyIcon, EditIcon, EyeIcon, HistoryIcon, PhotoIcon, PlusIcon, RefreshIcon, TrashIcon } from './icons'
 
 const StyleReferenceEditorModal = lazy(() => import('./StyleReferenceEditorModal'))
@@ -79,7 +78,6 @@ const LABEL_CLASS = 'mb-1.5 block text-[11px] font-semibold uppercase tracking-[
 const PLAN_LIST_CLASS = 'grid max-h-[420px] gap-2 overflow-y-auto overscroll-contain pr-1 custom-scrollbar sm:max-h-[480px]'
 const GUIDE_HINT_CLASS = 'mb-3 rounded-[var(--ios-radius-md)] bg-[hsl(var(--ios-blue-tint))] px-3 py-2 text-xs font-medium leading-relaxed text-[hsl(var(--primary))]'
 const DEEPSEEK_PLANNER_NOTICE = '当前 AI 策划配置为 DeepSeek 官方接口。DeepSeek 策划阶段不会读取参考图，系统会仅用 Listing 文本和你填写的商品信息生成策划；参考图仍会在正式生图时随生图请求发送。请把产品颜色、形状、结构、配件、Logo、套装数量等关键特征写进 Listing 或商品信息中。'
-const DEEPSEEK_ETSY_LISTING_NOTICE = '当前 AI 策划配置为 DeepSeek 官方接口。此接口不会读取参考图，也不能通过 Responses Web Search 完成实时趋势验证；系统会仅依据你填写的产品事实生成文案，并明确标记“未联网验证”。'
 const API_MAX_IMAGES = 16
 const STYLE_PREVIEW_WIDTH = 420
 const STYLE_PREVIEW_HEIGHT = 500
@@ -100,7 +98,7 @@ type PlannerActionProgress = 'filled' | 'submitted'
 type PlannerActionProgressMap = Record<string, PlannerActionProgress>
 type MobileActionDock = 'left' | 'right' | null
 type APlusModuleSpecsByType = Partial<Record<APlusContentType, AmazonAPlusModuleSpec[]>>
-type PlannerWorkspaceMode = AmazonPlannerMode | 'etsy-listing'
+type PlannerWorkspaceMode = AmazonPlannerMode | 'etsy-upgraded'
 type SelectedStyleReference = {
   presetId: string | null
   customStyleReferenceId: string | null
@@ -122,6 +120,25 @@ const PLANNER_HISTORY_LIMIT = 30
 
 function createPlannerSessionId() {
   return `amazon-planner-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function formatEtsySellerProductFacts(listingText: string, draft: AmazonPromptDraft): string {
+  const structuredFacts = [
+    ['Product name', draft.productTitle],
+    ['Category', draft.category],
+    ['Brand', draft.brand],
+    ['Color', draft.color],
+    ['Material', draft.material],
+    ['Target buyer', draft.audience],
+    ['Selling points', draft.sellingPoints],
+    ['Package includes', draft.packageIncludes],
+    ['Use / scene', draft.scene],
+    ['Do not change / show', draft.forbidden],
+  ].filter(([, value]) => value.trim())
+  return [
+    listingText.trim() ? `Seller description and instructions:\n${listingText.trim()}` : '',
+    structuredFacts.length ? `Seller-entered structured facts:\n${structuredFacts.map(([label, value]) => `${label}: ${value.trim()}`).join('\n')}` : '',
+  ].filter(Boolean).join('\n\n').slice(0, 6000)
 }
 
 function createCustomStyleReferenceId() {
@@ -187,8 +204,7 @@ function formatPlannerSessionTime(value: number) {
 
 function getPlannerSessionResultLabel(session: AmazonPlannerSession) {
   if (session.mode === 'aplus') return getAPlusContentTypeLabel(session.aPlusType)
-  if (session.mode === 'etsy-listing') return '双语详情 + 13 Tags'
-  if (session.mode !== 'etsy') return `${session.imagePlans.length} 张`
+  if (session.mode !== 'etsy' && session.mode !== 'etsy-upgraded') return '已归档'
   return session.imagePlans.length ? `${session.imagePlans.length} 张图片` : '未生成'
 }
 
@@ -236,7 +252,7 @@ function getGuideFocusClass(isActive: boolean) {
   return isActive ? 'ring-2 ring-[hsl(var(--primary)/0.2)]' : ''
 }
 
-function getPlannerActionKey(mode: AmazonPlannerMode, planIndex: number | null, slot: string | undefined | null) {
+function getPlannerActionKey(mode: PlannerWorkspaceMode, planIndex: number | null, slot: string | undefined | null) {
   if (planIndex == null || !slot) return ''
   return `${mode}:${planIndex}:${slot}`
 }
@@ -470,13 +486,12 @@ export default function AmazonPlanner() {
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const plannerAbortControllerRef = useRef<AbortController | null>(null)
   const etsyCampaignInputKeyRef = useRef<string | null>(null)
-  const etsyListingAbortControllerRef = useRef<AbortController | null>(null)
   const stylePresetAbortControllerRef = useRef<AbortController | null>(null)
   const [draft, setDraft] = useState<AmazonPromptDraft>(DEFAULT_AMAZON_PROMPT_DRAFT)
   const [resolution, setResolution] = useState<'2k' | '4k'>('2k')
   const [listingImageCount, setListingImageCount] = useState(DEFAULT_LISTING_IMAGE_COUNT)
   const [plannerMode, setPlannerMode] = useState<AmazonPlannerMode>('listing')
-  const [etsyListingStandalone, setEtsyListingStandalone] = useState(false)
+  const [etsyUpgradedStandalone, setEtsyUpgradedStandalone] = useState(false)
   const [marketplaceId, setMarketplaceId] = useState<AmazonMarketplaceId>(DEFAULT_AMAZON_MARKETPLACE_ID)
   const [aPlusType, setAPlusType] = useState<APlusContentType>('standard-large')
   const [aPlusModuleSpecsByType, setAPlusModuleSpecsByType] = useState<APlusModuleSpecsByType>({})
@@ -491,7 +506,6 @@ export default function AmazonPlanner() {
   })
   const [etsyVisualDna, setEtsyVisualDna] = useState<EtsyVisualDna | null>(null)
   const [etsyPhotographyAnalysis, setEtsyPhotographyAnalysis] = useState<EtsyPhotographyAnalysis | null>(null)
-  const [etsyListingDetails, setEtsyListingDetails] = useState<EtsyListingDetails | null>(null)
   const [selectedStylePresetId, setSelectedStylePresetId] = useState<string | null>(DEFAULT_STYLE_PRESET_ID)
   const [selectedStyleReference, setSelectedStyleReference] = useState<SelectedStyleReference | null>(null)
   const [styleDensityMode, setStyleDensityMode] = useState<AmazonStyleDensityMode>('rich')
@@ -515,17 +529,16 @@ export default function AmazonPlanner() {
   const [isPlanning, setIsPlanning] = useState(false)
   const [planningEtsyShotGroup, setPlanningEtsyShotGroup] = useState<EtsyShotGroup | null>(null)
   const [isGeneratingEtsyBatch, setIsGeneratingEtsyBatch] = useState(false)
-  const [isGeneratingEtsyListing, setIsGeneratingEtsyListing] = useState(false)
   const [plannerError, setPlannerError] = useState('')
-  const [etsyListingError, setEtsyListingError] = useState('')
   const [isPreparingReferencePayload, setIsPreparingReferencePayload] = useState(false)
   const [referencePayloadNotice, setReferencePayloadNotice] = useState('')
   const [actionProgress, setActionProgress] = useState<PlannerActionProgressMap>({})
   const [mobileActionDock, setMobileActionDock] = useState<MobileActionDock>(null)
   const [showProductDetails, setShowProductDetails] = useState(false)
-  const workspaceMode: PlannerWorkspaceMode = etsyListingStandalone ? 'etsy-listing' : plannerMode
-  const isEtsyListingMode = workspaceMode === 'etsy-listing'
+  const workspaceMode: PlannerWorkspaceMode = etsyUpgradedStandalone ? 'etsy-upgraded' : plannerMode
   const isEtsyImageMode = workspaceMode === 'etsy'
+  const isEtsyUpgradedMode = workspaceMode === 'etsy-upgraded'
+  const isEtsyPhotoMode = isEtsyImageMode || isEtsyUpgradedMode
   const productDetailValues = [
     draft.productTitle,
     draft.category,
@@ -535,7 +548,7 @@ export default function AmazonPlanner() {
     draft.audience,
     draft.sellingPoints,
     draft.packageIncludes,
-    ...(!isEtsyListingMode ? [draft.scene] : []),
+    draft.scene,
     draft.forbidden,
   ]
   const completedProductDetailCount = productDetailValues.filter((value) => value.trim()).length
@@ -577,11 +590,11 @@ export default function AmazonPlanner() {
       ? seriesStyleGuides.etsy
       : seriesStyleGuides.listing
   const isMainListingPlan = plannerMode === 'listing' && isAmazonListingMainSlot(selectedPlan?.slot)
-  const styleReferenceRequired = !isEtsyListingMode && (plannerMode === 'etsy' || !isMainListingPlan)
+  const styleReferenceRequired = plannerMode === 'etsy' || !isMainListingPlan
   const hasStyleReference = Boolean(selectedStyleImage?.imageId)
   const usesStyleDirectionForActivePlan = styleReferenceRequired && Boolean(selectedVisualStyle)
-  const usesStyleReferenceForActivePlan = usesStyleDirectionForActivePlan && !isEtsyImageMode && hasStyleReference
-  const hasRequiredStyle = !styleReferenceRequired || (isEtsyImageMode ? usesStyleDirectionForActivePlan : hasStyleReference)
+  const usesStyleReferenceForActivePlan = usesStyleDirectionForActivePlan && !isEtsyPhotoMode && hasStyleReference
+  const hasRequiredStyle = !styleReferenceRequired || (isEtsyPhotoMode ? usesStyleDirectionForActivePlan : hasStyleReference)
   const effectiveReferenceCount = inputImages.length + (usesStyleReferenceForActivePlan && selectedStyleImage?.imageId && !inputImages.some((image) => image.id === selectedStyleImage.imageId) ? 1 : 0)
   const styleReferenceLimitExceeded = usesStyleReferenceForActivePlan && effectiveReferenceCount > API_MAX_IMAGES
   const activePrompt = plannerMode === 'aplus'
@@ -600,6 +613,8 @@ export default function AmazonPlanner() {
         styleReferenceAttached: false,
         styleDensityMode,
         selectedVisualStyle: usesStyleDirectionForActivePlan ? selectedEtsyVisualStyle : null,
+        photographyUpgrade: isEtsyUpgradedMode,
+        sellerProductFacts: isEtsyUpgradedMode ? formatEtsySellerProductFacts(listingText, draft) : undefined,
       }) : ''
       : selectedPlan ? buildAmazonPlanPrompt({
         ...selectedPlan,
@@ -618,7 +633,6 @@ export default function AmazonPlanner() {
         activePrompt,
       ].join('\n')
     : activePrompt
-  const etsyListingMarkdown = etsyListingDetails ? formatEtsyListingDetailsMarkdown(etsyListingDetails) : ''
   const plannerProfile = getAmazonPlannerProfile(settings)
   const plannerProfileValidation = plannerProfile ? validateApiProfile(plannerProfile) : '未选择支持 Chat Completions 或 Responses API 的 AI 策划配置'
   const plannerApiLabel = plannerProfile?.apiMode === 'chat' ? 'Chat Completions' : 'Responses API'
@@ -642,12 +656,12 @@ export default function AmazonPlanner() {
     : plannerMode === 'aplus'
       ? `${aPlusSpecs.length} 个待策划模块`
       : '未选择'
-  const currentActionKey = getPlannerActionKey(plannerMode, visiblePlanIndex, actionSlot)
+  const currentActionKey = getPlannerActionKey(workspaceMode, visiblePlanIndex, actionSlot)
   const currentActionProgress = currentActionKey ? actionProgress[currentActionKey] ?? null : null
   const currentActionFilled = currentActionProgress === 'filled' || currentActionProgress === 'submitted'
   const currentActionSubmitted = currentActionProgress === 'submitted'
-  const pendingEtsyPlanCount = plannerMode === 'etsy'
-    ? imagePlans.filter((plan, index) => actionProgress[getPlannerActionKey('etsy', index, plan.slot)] !== 'submitted').length
+  const pendingEtsyPlanCount = isEtsyPhotoMode
+    ? imagePlans.filter((plan, index) => actionProgress[getPlannerActionKey(workspaceMode, index, plan.slot)] !== 'submitted').length
     : 0
   const etsyCampaignInputKey = getEtsyCampaignInputKey(listingText, draft, inputImages.map((image) => image.id))
   const canContinueEtsyCampaign = etsyCampaignInputKeyRef.current === etsyCampaignInputKey
@@ -683,9 +697,7 @@ export default function AmazonPlanner() {
   ] satisfies Array<{ label: string; detail: string; status: WorkflowStepStatus }>
   const hasListingText = Boolean(listingText.trim())
   const hasUsablePlannerProfile = Boolean(plannerProfile && !plannerProfileValidation)
-  const seriesStyleReferenceNeeded = isEtsyListingMode
-    ? false
-    : plannerMode === 'etsy'
+  const seriesStyleReferenceNeeded = plannerMode === 'etsy'
     ? hasPlanOptions
     : plannerMode === 'aplus'
     ? hasPlanOptions
@@ -698,22 +710,10 @@ export default function AmazonPlanner() {
     : !hasListingText
       ? {
           target: 'planner-input',
-          message: isEtsyListingMode
-            ? '下一步：填写用于 Etsy Listing 的产品事实、规格、用途和目标买家'
-            : plannerMode === 'etsy'
+          message: plannerMode === 'etsy'
             ? '下一步：粘贴产品描述、材质工艺、尺寸、用途与目标买家'
             : plannerMode === 'aplus' ? '下一步：粘贴标题、五点描述或品牌说明' : '下一步：粘贴标题和五点描述',
         }
-      : isEtsyListingMode
-        ? etsyListingDetails
-          ? {
-              target: 'complete',
-              message: 'Etsy Listing详情已生成，可复制后发布前核对缺失规格。',
-            }
-          : {
-              target: 'planner-action',
-              message: '下一步：点击生成Listing详情，完成趋势验证、SEO标题、双语详情与13个Tags',
-            }
       : !hasPlanOptions
         ? {
             target: 'planner-action',
@@ -758,7 +758,7 @@ export default function AmazonPlanner() {
     let cancelled = false
     getAllAmazonPlannerSessions()
       .then((sessions) => {
-        if (!cancelled) setPlannerSessions(sortPlannerSessions(sessions))
+        if (!cancelled) setPlannerSessions(sortPlannerSessions(sessions.filter((session) => session.mode !== 'etsy-listing')))
       })
       .catch((err) => {
         if (!cancelled) showToast(`策划历史加载失败：${err instanceof Error ? err.message : String(err)}`, 'error')
@@ -772,8 +772,6 @@ export default function AmazonPlanner() {
     return () => {
       plannerAbortControllerRef.current?.abort()
       plannerAbortControllerRef.current = null
-      etsyListingAbortControllerRef.current?.abort()
-      etsyListingAbortControllerRef.current = null
       stylePresetAbortControllerRef.current?.abort()
       stylePresetAbortControllerRef.current = null
     }
@@ -811,6 +809,7 @@ export default function AmazonPlanner() {
   }, [customStyleReferences])
 
   const upsertPlannerSessionList = (session: AmazonPlannerSession) => {
+    if (session.mode === 'etsy-listing') return
     setPlannerSessions((current) => sortPlannerSessions([
       session,
       ...current.filter((item) => item.id !== session.id),
@@ -827,7 +826,7 @@ export default function AmazonPlanner() {
     return {
       id: targetSessionId ?? createPlannerSessionId(),
       title: overrides.title ?? getPlannerSessionTitle(snapshotDraft, snapshotListingText),
-      mode: overrides.mode ?? (isEtsyListingMode ? 'etsy-listing' : toAmazonPlannerSessionMode(plannerMode)),
+      mode: overrides.mode ?? (isEtsyUpgradedMode ? 'etsy-upgraded' : toAmazonPlannerSessionMode(plannerMode)),
       marketplaceId: overrides.marketplaceId ?? marketplaceId,
       aPlusType: overrides.aPlusType ?? aPlusType,
       resolution: overrides.resolution ?? resolution,
@@ -843,9 +842,6 @@ export default function AmazonPlanner() {
       etsyPhotographyAnalysis: hasOverride('etsyPhotographyAnalysis')
         ? overrides.etsyPhotographyAnalysis ?? null
         : etsyPhotographyAnalysis,
-      etsyListingDetails: hasOverride('etsyListingDetails')
-        ? overrides.etsyListingDetails ?? null
-        : isEtsyListingMode ? etsyListingDetails : null,
       styleCandidates: overrides.styleCandidates ?? [],
       styleImages: overrides.styleImages ?? [],
       selectedStyleIndex: overrides.selectedStyleIndex ?? null,
@@ -958,7 +954,7 @@ export default function AmazonPlanner() {
     }
 
     const plansToGenerate = imagePlans.filter((plan, index) =>
-      actionProgress[getPlannerActionKey('etsy', index, plan.slot)] !== 'submitted',
+      actionProgress[getPlannerActionKey(workspaceMode, index, plan.slot)] !== 'submitted',
     )
     if (!plansToGenerate.length) {
       showToast('15 个 Etsy 镜头都已提交', 'info')
@@ -990,6 +986,8 @@ export default function AmazonPlanner() {
             styleReferenceAttached: false,
             styleDensityMode,
             selectedVisualStyle: usesStyleDirectionForActivePlan ? selectedEtsyVisualStyle : null,
+            photographyUpgrade: isEtsyUpgradedMode,
+            sellerProductFacts: isEtsyUpgradedMode ? formatEtsySellerProductFacts(listingText, draft) : undefined,
           }),
           taskCategoryOverride: {
             productTitle: draft.productTitle.trim(),
@@ -1000,7 +998,7 @@ export default function AmazonPlanner() {
         })
         if (submitted) {
           submittedCount += 1
-          markActionProgress(getPlannerActionKey('etsy', planIndex, plan.slot), 'submitted')
+          markActionProgress(getPlannerActionKey(workspaceMode, planIndex, plan.slot), 'submitted')
         }
       }
     }
@@ -1350,7 +1348,7 @@ export default function AmazonPlanner() {
     setActionProgress({})
     void savePlannerSession({
       id: createPlannerSessionId(),
-      mode: toAmazonPlannerSessionMode(result.mode),
+      mode: isEtsyUpgradedMode ? 'etsy-upgraded' : toAmazonPlannerSessionMode(result.mode),
       marketplaceId: resultMarketplaceId,
       listingImageCount,
       aPlusModuleSpecs: getAPlusModuleSpecsForSession(aPlusModuleSpecsByType),
@@ -1401,10 +1399,6 @@ export default function AmazonPlanner() {
       showToast('AI 策划正在进行中', 'info')
       return
     }
-    if (etsyListingAbortControllerRef.current) {
-      showToast('Etsy Listing 详情正在生成中', 'info')
-      return
-    }
     if (!listingText.trim()) {
       showToast(plannerMode === 'etsy' ? '请先填写产品描述和材质工艺' : '请先粘贴标题和五点描述', 'error')
       return
@@ -1442,6 +1436,7 @@ export default function AmazonPlanner() {
         aPlusModuleSpecs: aPlusSpecs,
         aPlusGenerationTier: resolutionTier,
         etsyShotGroup: plannerMode === 'etsy' ? etsyShotGroup : undefined,
+        etsyPhotographyUpgrade: isEtsyUpgradedMode,
         etsyCampaignContext: plannerMode === 'etsy' && etsyShotGroup && canContinueEtsyCampaign && imagePlans.length && etsyVisualDna && etsyPhotographyAnalysis
           ? { visualDna: etsyVisualDna, photographyAnalysis: etsyPhotographyAnalysis, plans: imagePlans }
           : undefined,
@@ -1477,88 +1472,6 @@ export default function AmazonPlanner() {
     setPlanningEtsyShotGroup(null)
     setEtsyPlanningProgress('')
     showToast('AI 策划已停止', 'info')
-  }
-
-  const createEtsyListingDetails = async () => {
-    if (plannerAbortControllerRef.current || etsyListingAbortControllerRef.current) {
-      showToast('已有 AI 任务正在进行中', 'info')
-      return
-    }
-    if (!listingText.trim()) {
-      showToast('请先填写产品描述、材质、尺寸和用途', 'error')
-      return
-    }
-    if (!plannerProfile) {
-      setEtsyListingError('未选择支持 Chat Completions 或 Responses API 的 AI 策划配置。请先在设置 -> API 中选择策划配置。')
-      showToast('AI 策划配置缺失', 'error')
-      return
-    }
-    if (plannerProfileValidation) {
-      setEtsyListingError(`AI 策划配置「${plannerProfile.name}」不完整：${plannerProfileValidation}`)
-      showToast('AI 策划配置不完整', 'error')
-      return
-    }
-
-    const controller = new AbortController()
-    etsyListingAbortControllerRef.current = controller
-    setIsGeneratingEtsyListing(true)
-    setEtsyListingError('')
-    try {
-      const referencePayload = await prepareReferencePayloadForRequest(inputImages.map((image) => image.dataUrl), controller.signal)
-      const result = await callEtsyListingDetailsApi({
-        listingText,
-        baseDraft: draft,
-        profile: plannerProfile,
-        referenceImageDataUrls: referencePayload.dataUrls,
-        signal: controller.signal,
-      })
-      if (controller.signal.aborted) return
-      setEtsyListingDetails(result.details)
-      await savePlannerSession({
-        mode: 'etsy-listing',
-        etsyVisualDna: null,
-        etsyPhotographyAnalysis: null,
-        etsyListingDetails: result.details,
-        seriesStyleGuides: { listing: '', aplus: '', etsy: '' },
-        selectedStylePresetId: null,
-        selectedStyleReferenceImageId: null,
-        selectedCustomStyleReferenceId: null,
-        selectedCustomStyleReferenceSnapshot: null,
-        imagePlans: [],
-        aPlusPlans: [],
-        selectedPlanIndex: null,
-        selectedAPlusPlanIndex: null,
-      })
-      showToast(result.webResearchUsed ? 'Etsy Listing 详情已生成并完成联网验证' : 'Etsy Listing 详情已生成；当前接口未完成联网验证', result.webResearchUsed ? 'success' : 'info')
-    } catch (err) {
-      if (controller.signal.aborted || isAbortError(err)) return
-      setEtsyListingError(getPlannerFailureDetail(err))
-      showToast('Etsy Listing 详情生成失败，请查看详情', 'error')
-    } finally {
-      if (etsyListingAbortControllerRef.current === controller) {
-        etsyListingAbortControllerRef.current = null
-        setIsGeneratingEtsyListing(false)
-      }
-    }
-  }
-
-  const stopEtsyListingDetails = () => {
-    const controller = etsyListingAbortControllerRef.current
-    if (!controller) return
-    controller.abort()
-    etsyListingAbortControllerRef.current = null
-    setIsGeneratingEtsyListing(false)
-    showToast('Etsy Listing 详情生成已停止', 'info')
-  }
-
-  const copyEtsyListingDetails = async () => {
-    if (!etsyListingMarkdown) return
-    try {
-      await navigator.clipboard.writeText(etsyListingMarkdown)
-      showToast('Etsy Listing 详情已复制', 'success')
-    } catch {
-      showToast('复制 Etsy Listing 详情失败', 'error')
-    }
   }
 
   const changeStyleDensityMode = (mode: AmazonStyleDensityMode) => {
@@ -1611,17 +1524,63 @@ export default function AmazonPlanner() {
     setActionProgress({})
   }
 
+  const switchEtsyPhotographyVersion = async (targetMode: 'etsy' | 'etsy-upgraded') => {
+    if (isPlanning || isGeneratingEtsyBatch) {
+      showToast('当前镜头任务完成或停止后再切换版本', 'info')
+      return
+    }
+    const inputKey = etsyCampaignInputKey
+    try {
+      await savePlannerSession({ mode: workspaceMode === 'etsy-upgraded' ? 'etsy-upgraded' : 'etsy' })
+    } catch (err) {
+      showToast(`当前 Etsy 策划暂存失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    }
+    try {
+      const sessions = (await getAllAmazonPlannerSessions()).filter((session) => session.mode !== 'etsy-listing')
+      setPlannerSessions(sortPlannerSessions(sessions))
+      const targetSession = sessions.find((session) =>
+        session.mode === targetMode
+        && getEtsyCampaignInputKey(session.listingText, fromSessionDraft(session.draft), session.referenceImageIds) === inputKey,
+      )
+      if (targetSession) {
+        await restorePlannerSession(targetSession)
+        return
+      }
+    } catch (err) {
+      showToast(`Etsy 历史读取失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    }
+    setEtsyUpgradedStandalone(targetMode === 'etsy-upgraded')
+    setPlannerMode('etsy')
+    setImagePlans([])
+    setSelectedPlanIndex(null)
+    setEtsyVisualDna(null)
+    setEtsyPhotographyAnalysis(null)
+    setSeriesStyleGuides((current) => ({ ...current, etsy: '' }))
+    setSelectedStylePresetId(DEFAULT_STYLE_PRESET_ID)
+    setSelectedStyleReference(null)
+    setStylePreview(null)
+    setStyleError('')
+    setCurrentPlannerSessionId(null)
+    setPlannerError('')
+    setActionProgress({})
+    etsyCampaignInputKeyRef.current = null
+  }
+
   const changeWorkspaceMode = (mode: PlannerWorkspaceMode) => {
     if (mode === workspaceMode) return
-    if (mode === 'etsy-listing') {
-      if (plannerMode !== 'etsy') changePlannerMode('etsy')
-      setEtsyListingStandalone(true)
+    const targetIsEtsy = mode === 'etsy' || mode === 'etsy-upgraded'
+    const currentIsEtsy = workspaceMode === 'etsy' || workspaceMode === 'etsy-upgraded'
+    if (targetIsEtsy && currentIsEtsy) {
+      void switchEtsyPhotographyVersion(mode)
+    } else if (targetIsEtsy) {
+      setEtsyUpgradedStandalone(mode === 'etsy-upgraded')
+      changePlannerMode('etsy')
+      etsyCampaignInputKeyRef.current = null
     } else {
-      setEtsyListingStandalone(false)
+      setEtsyUpgradedStandalone(false)
       changePlannerMode(mode)
     }
     setPlannerError('')
-    setEtsyListingError('')
     setMobileActionDock(null)
   }
 
@@ -1648,8 +1607,6 @@ export default function AmazonPlanner() {
     setAPlusPlans([])
     setEtsyVisualDna(null)
     setEtsyPhotographyAnalysis(null)
-    setEtsyListingDetails(null)
-    setEtsyListingError('')
     setSeriesStyleGuides(clearedStyleGuides)
     setSelectedPlanIndex(null)
     setSelectedAPlusPlanIndex(null)
@@ -1660,7 +1617,6 @@ export default function AmazonPlanner() {
       seriesStyleGuides: clearedStyleGuides,
       etsyVisualDna: null,
       etsyPhotographyAnalysis: null,
-      etsyListingDetails: null,
       imagePlans: [],
       aPlusPlans: [],
       selectedPlanIndex: null,
@@ -1721,7 +1677,6 @@ export default function AmazonPlanner() {
     setSeriesStyleGuides({ listing: '', aplus: '', etsy: '' })
     setEtsyVisualDna(null)
     setEtsyPhotographyAnalysis(null)
-    setEtsyListingDetails(null)
     setSelectedStylePresetId(DEFAULT_STYLE_PRESET_ID)
     setSelectedStyleReference(null)
     setStyleDensityMode('rich')
@@ -1730,13 +1685,12 @@ export default function AmazonPlanner() {
     setSelectedPlanIndex(null)
     setSelectedAPlusPlanIndex(null)
     setPlannerError('')
-    setEtsyListingError('')
     setCurrentPlannerSessionId(null)
     setActionProgress({})
   }
 
   const restorePlannerSession = async (session: AmazonPlannerSession) => {
-    const isEtsyListingSession = session.mode === 'etsy-listing'
+    const isEtsyUpgradedSession = session.mode === 'etsy-upgraded' || session.mode === 'etsy-listing'
     const restoredReferences = []
     for (const imageId of session.referenceImageIds) {
       const dataUrl = await ensureImageCached(imageId)
@@ -1827,7 +1781,7 @@ export default function AmazonPlanner() {
       }
     }
 
-    if (!isEtsyListingSession && !restoredStyleReference && nextStylePresetId) {
+    if (!restoredStyleReference && nextStylePresetId) {
       try {
         const result = await ensureStylePresetImageStored(nextStylePresetId)
         restoredStyleReference = {
@@ -1846,8 +1800,8 @@ export default function AmazonPlanner() {
 
     const restoredAPlusModuleSpecsByType = getSessionAPlusModuleSpecsByType(session)
     const restoredMarketplaceId = getSessionMarketplaceId(session)
-    setPlannerMode(session.mode === 'etsy-listing' ? 'etsy' : session.mode)
-    setEtsyListingStandalone(session.mode === 'etsy-listing')
+    setPlannerMode(session.mode === 'etsy-upgraded' || session.mode === 'etsy-listing' ? 'etsy' : session.mode)
+    setEtsyUpgradedStandalone(isEtsyUpgradedSession)
     setMarketplaceId(restoredMarketplaceId)
     setAPlusType(session.aPlusType)
     setResolution(session.resolution)
@@ -1859,9 +1813,8 @@ export default function AmazonPlanner() {
     setSeriesStyleGuides({ ...session.seriesStyleGuides, etsy: session.seriesStyleGuides.etsy ?? '' })
     setEtsyVisualDna(session.etsyVisualDna ?? null)
     setEtsyPhotographyAnalysis(session.etsyPhotographyAnalysis ?? null)
-    setEtsyListingDetails(session.etsyListingDetails ?? null)
-    setSelectedStylePresetId(isEtsyListingSession ? null : restoredStyleReference ? restoredStyleReference.presetId : nextStylePresetId)
-    setSelectedStyleReference(isEtsyListingSession ? null : restoredStyleReference)
+    setSelectedStylePresetId(restoredStyleReference ? restoredStyleReference.presetId : nextStylePresetId)
+    setSelectedStyleReference(restoredStyleReference)
     setStyleDensityMode(restoredCustomStyleReference?.editState.density ?? session.styleDensityMode ?? 'rich')
     setStylePreview(null)
     setImagePlans(session.imagePlans as AmazonImagePlan[])
@@ -1869,10 +1822,9 @@ export default function AmazonPlanner() {
     setSelectedPlanIndex(session.selectedPlanIndex != null && session.imagePlans[session.selectedPlanIndex] ? session.selectedPlanIndex : null)
     setSelectedAPlusPlanIndex(session.selectedAPlusPlanIndex != null && session.aPlusPlans[session.selectedAPlusPlanIndex] ? session.selectedAPlusPlanIndex : null)
     setPlannerError('')
-    setEtsyListingError('')
     setStyleError(restoredStyleError)
     setCurrentPlannerSessionId(session.id)
-    etsyCampaignInputKeyRef.current = session.mode === 'etsy'
+    etsyCampaignInputKeyRef.current = session.mode === 'etsy' || isEtsyUpgradedSession
       ? getEtsyCampaignInputKey(session.listingText, fromSessionDraft(session.draft), session.referenceImageIds)
       : null
     setShowPlannerHistory(false)
@@ -1882,10 +1834,11 @@ export default function AmazonPlanner() {
       marketplaceId: restoredMarketplaceId,
       listingImageCount: getSessionListingImageCount(session),
       aPlusModuleSpecs: getAPlusModuleSpecsForSession(restoredAPlusModuleSpecsByType),
-      selectedStylePresetId: isEtsyListingSession ? null : restoredStyleReference ? restoredStyleReference.presetId : nextStylePresetId,
-      selectedStyleReferenceImageId: isEtsyListingSession ? null : restoredStyleReference?.imageId ?? null,
-      selectedCustomStyleReferenceId: isEtsyListingSession ? null : restoredCustomStyleReference?.id ?? null,
-      selectedCustomStyleReferenceSnapshot: isEtsyListingSession ? null : restoredCustomStyleReference,
+      mode: isEtsyUpgradedSession ? 'etsy-upgraded' : session.mode,
+      selectedStylePresetId: restoredStyleReference ? restoredStyleReference.presetId : nextStylePresetId,
+      selectedStyleReferenceImageId: restoredStyleReference?.imageId ?? null,
+      selectedCustomStyleReferenceId: restoredCustomStyleReference?.id ?? null,
+      selectedCustomStyleReferenceSnapshot: restoredCustomStyleReference,
       styleDensityMode: restoredCustomStyleReference?.editState.density ?? session.styleDensityMode ?? 'rich',
       updatedAt: Date.now(),
     }
@@ -1994,7 +1947,7 @@ export default function AmazonPlanner() {
                 ['listing', 'Listing 图'],
                 ['aplus', 'A+ 图'],
                 ['etsy', 'Etsy 图'],
-                ['etsy-listing', 'Etsy Listing详情'],
+                ['etsy-upgraded', 'Etsy 图升级版'],
               ] as const).map(([mode, label]) => (
                 <button
                   key={mode}
@@ -2035,13 +1988,13 @@ export default function AmazonPlanner() {
                 </select>
               </label>
             )}
-            {isEtsyImageMode && (
+            {isEtsyPhotoMode && (
               <div className="inline-flex h-10 items-center gap-2 rounded-[var(--ios-radius-md)] bg-[hsl(var(--muted))] px-3 text-sm font-medium text-gray-600 dark:text-gray-300">
                 <span className="text-xs text-gray-400 dark:text-gray-500">镜头数</span>
                 <span className="font-semibold text-gray-900 dark:text-gray-100">{ETSY_SHOT_COUNT} 张</span>
               </div>
             )}
-            {!isEtsyListingMode && <div className="ios-segmented">
+            <div className="ios-segmented">
               {(['2k', '4k'] as const).map((item) => (
                 <button
                   key={item}
@@ -2053,7 +2006,7 @@ export default function AmazonPlanner() {
                   {item.toUpperCase()}
                 </button>
               ))}
-            </div>}
+            </div>
             <button
               type="button"
               onClick={() => setShowPlannerHistory((value) => !value)}
@@ -2075,7 +2028,7 @@ export default function AmazonPlanner() {
               <div>
                 <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">策划历史</div>
                 <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                  保存在当前浏览器中；Etsy 图片策划和 Etsy Listing详情会作为不同类型分别保存与恢复。
+                  保存在当前浏览器中；Etsy 图与升级版分别保存与恢复。
                 </div>
               </div>
               <button
@@ -2094,8 +2047,8 @@ export default function AmazonPlanner() {
                       <div className="min-w-0">
                         <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{session.title}</div>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-                          <span>{session.mode === 'etsy-listing' ? 'Etsy Listing详情' : session.mode === 'etsy' ? 'Etsy 图' : session.mode === 'aplus' ? 'A+ 图' : 'Listing 图'}</span>
-                          {session.mode !== 'etsy' && session.mode !== 'etsy-listing' && (
+                          <span>{session.mode === 'etsy-upgraded' ? 'Etsy 图升级版' : session.mode === 'etsy' ? 'Etsy 图' : session.mode === 'aplus' ? 'A+ 图' : 'Listing 图'}</span>
+                          {session.mode !== 'etsy' && session.mode !== 'etsy-upgraded' && (
                             <>
                               <span>·</span>
                               <span>{getAmazonMarketplaceLabel(getSessionMarketplaceId(session))}</span>
@@ -2146,17 +2099,17 @@ export default function AmazonPlanner() {
         )}
       </div>
 
-      <div className={`grid gap-0 ${isEtsyListingMode ? 'lg:grid-cols-1' : 'lg:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]'}`}>
-        <div className={`border-b border-[hsl(var(--separator))] p-4 sm:p-5 lg:border-b-0 ${isEtsyListingMode ? '' : 'lg:border-r lg:border-[hsl(var(--separator))]'}`}>
+      <div className="grid gap-0 lg:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)]">
+        <div className="border-b border-[hsl(var(--separator))] p-4 sm:p-5 lg:border-b-0 lg:border-r lg:border-[hsl(var(--separator))]">
           <div className={`ios-group p-4 ${getGuidePanelClass(plannerGuideActive)}`}>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">
-                  {isEtsyListingMode ? 'Etsy Listing 详情专家' : isEtsyImageMode ? 'Etsy 自适应艺术总监' : plannerMode === 'aplus' ? 'A+ 图片策划' : 'Listing 智能策划'}
+                  {isEtsyUpgradedMode ? 'Etsy 摄影升级版总监' : isEtsyImageMode ? 'Etsy 自适应艺术总监' : plannerMode === 'aplus' ? 'A+ 图片策划' : 'Listing 智能策划'}
                 </div>
                 <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                  {isEtsyListingMode
-                    ? '独立生成 Etsy 双语品类、SEO标题、高转化详情和13个Tags；不调用生图流程。'
+                  {isEtsyUpgradedMode
+                    ? `先区分卖家确认事实、原图可见证据与未知项，再为 ${ETSY_SHOT_COUNT} 个镜头匹配真实摄影方案；最终提示逐张锁定产品身份。`
                     : isEtsyImageMode
                     ? `先锁定产品 Visual DNA，再动态策划 ${ETSY_SHOT_COUNT} 个专属镜头；每张提示词都重复材质、颜色和纹理，防止 AI 重设计。`
                     : plannerMode === 'aplus'
@@ -2165,7 +2118,7 @@ export default function AmazonPlanner() {
                 </div>
               </div>
               <div className="rounded-lg bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-500 dark:bg-white/[0.06] dark:text-gray-400">
-                {isEtsyListingMode ? '独立文案' : '双配置'}
+                {isEtsyUpgradedMode ? '事实锁定摄影' : '双配置'}
               </div>
             </div>
             {plannerGuideActive && (
@@ -2194,14 +2147,12 @@ export default function AmazonPlanner() {
               </div>
             )}
             <label className={`mt-3 block rounded-xl transition ${getGuideFocusClass(guideState.target === 'planner-input')}`}>
-              <span className={LABEL_CLASS}>{isEtsyListingMode ? 'Etsy Listing 产品资料 / 规格 / 用途 / 目标买家' : isEtsyImageMode ? '产品描述 / 材质工艺 / 尺寸 / 目标买家' : plannerMode === 'aplus' ? '标题 / 五点描述 / 品牌说明' : '标题 / 五点描述'}</span>
+              <span className={LABEL_CLASS}>{isEtsyPhotoMode ? '产品描述 / 材质工艺 / 尺寸 / 目标买家' : plannerMode === 'aplus' ? '标题 / 五点描述 / 品牌说明' : '标题 / 五点描述'}</span>
               <textarea
                 value={listingText}
                 onChange={(event) => setListingText(event.target.value)}
                 className={`${FIELD_CLASS} min-h-[138px] resize-y`}
-                placeholder={isEtsyListingMode
-                  ? 'Product name: ...\nProduct type / function: ...\nMaterial / finish: ...\nColor: ...\nDimensions / options: ...\nWhat is included: ...\nTarget buyer / use case: ...\nVerified craftsmanship: ...\nFacts that need confirmation: ...'
-                  : isEtsyImageMode
+                placeholder={isEtsyPhotoMode
                   ? 'Product name: ...\nMaterial / texture: ...\nReal color / finish: ...\nDimensions / construction: ...\nUse case / target Etsy buyer: ...\nDo not change: ...'
                   : plannerMode === 'aplus'
                     ? 'Title: ...\n\nAbout this item\n- Bullet 1...\n- Bullet 2...\n\nBrand story / tone: ...'
@@ -2217,21 +2168,21 @@ export default function AmazonPlanner() {
                 </div>
               </div>
               <div className={`flex flex-wrap items-center gap-2 rounded-xl transition sm:justify-end ${getGuideFocusClass(guideState.target === 'planner-action')}`}>
-                {!isEtsyListingMode && (isEtsyImageMode ? (
+                {isEtsyPhotoMode ? (
                   <>
                     <button
                       type="button"
                       onClick={() => void createAiPlan('original')}
-                      disabled={isPlanning || isGeneratingEtsyListing || Boolean(plannerProfileValidation)}
-                      className={`ios-button h-10 px-3 text-sm font-semibold ${isPlanning && planningEtsyShotGroup === 'original' ? 'cursor-wait bg-gray-400 text-white' : isPlanning || isGeneratingEtsyListing || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-filled'} ${guideState.target === 'planner-action' ? 'ring-2 ring-[hsl(var(--primary)/0.25)] ring-offset-2 ring-offset-white dark:ring-offset-gray-950' : ''}`}
+                      disabled={isPlanning || Boolean(plannerProfileValidation)}
+                      className={`ios-button h-10 px-3 text-sm font-semibold ${isPlanning && planningEtsyShotGroup === 'original' ? 'cursor-wait bg-gray-400 text-white' : isPlanning || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-filled'} ${guideState.target === 'planner-action' ? 'ring-2 ring-[hsl(var(--primary)/0.25)] ring-offset-2 ring-offset-white dark:ring-offset-gray-950' : ''}`}
                     >
                       {isPlanning && planningEtsyShotGroup === 'original' ? '策划中...' : `原有${ETSY_ORIGINAL_SHOT_COUNT}张`}
                     </button>
                     <button
                       type="button"
                       onClick={() => void createAiPlan('additional')}
-                      disabled={isPlanning || isGeneratingEtsyListing || Boolean(plannerProfileValidation)}
-                      className={`ios-button h-10 px-3 text-sm font-semibold ${isPlanning && planningEtsyShotGroup === 'additional' ? 'cursor-wait bg-gray-400 text-white' : isPlanning || isGeneratingEtsyListing || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-plain'}`}
+                      disabled={isPlanning || Boolean(plannerProfileValidation)}
+                      className={`ios-button h-10 px-3 text-sm font-semibold ${isPlanning && planningEtsyShotGroup === 'additional' ? 'cursor-wait bg-gray-400 text-white' : isPlanning || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-plain'}`}
                     >
                       {isPlanning && planningEtsyShotGroup === 'additional' ? '策划中...' : `新增${ETSY_SHOT_COUNT - ETSY_ORIGINAL_SHOT_COUNT}张`}
                     </button>
@@ -2240,20 +2191,10 @@ export default function AmazonPlanner() {
                   <button
                     type="button"
                     onClick={() => void createAiPlan()}
-                    disabled={isPlanning || isGeneratingEtsyListing || Boolean(plannerProfileValidation)}
-                    className={`ios-button h-10 px-4 text-sm font-semibold ${isPlanning ? 'cursor-wait bg-gray-400 text-white' : isGeneratingEtsyListing || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-filled'} ${guideState.target === 'planner-action' ? 'ring-2 ring-[hsl(var(--primary)/0.25)] ring-offset-2 ring-offset-white dark:ring-offset-gray-950' : ''}`}
+                    disabled={isPlanning || Boolean(plannerProfileValidation)}
+                    className={`ios-button h-10 px-4 text-sm font-semibold ${isPlanning ? 'cursor-wait bg-gray-400 text-white' : plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'ios-button-filled'} ${guideState.target === 'planner-action' ? 'ring-2 ring-[hsl(var(--primary)/0.25)] ring-offset-2 ring-offset-white dark:ring-offset-gray-950' : ''}`}
                   >
                     {isPlanning ? '策划中...' : plannerMode === 'aplus' ? 'AI策划A+' : 'AI策划'}
-                  </button>
-                ))}
-                {isEtsyListingMode && (
-                  <button
-                    type="button"
-                    onClick={createEtsyListingDetails}
-                    disabled={isPlanning || isGeneratingEtsyListing || Boolean(plannerProfileValidation)}
-                    className={`ios-button h-10 px-4 text-sm font-semibold ${isGeneratingEtsyListing ? 'cursor-wait bg-violet-400 text-white' : isPlanning || plannerProfileValidation ? 'cursor-not-allowed bg-gray-300 text-white dark:bg-white/[0.12]' : 'bg-violet-600 text-white hover:bg-violet-500'}`}
-                  >
-                    {isGeneratingEtsyListing ? '生成详情中...' : etsyListingDetails ? '重新生成Listing详情' : '生成Listing详情'}
                   </button>
                 )}
                 {isPlanning && (
@@ -2266,17 +2207,7 @@ export default function AmazonPlanner() {
                     停止
                   </button>
                 )}
-                {isGeneratingEtsyListing && (
-                  <button
-                    type="button"
-                    onClick={stopEtsyListingDetails}
-                    className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3 text-sm font-semibold text-red-600 transition hover:bg-red-50 dark:border-red-400/20 dark:bg-gray-900 dark:text-red-300 dark:hover:bg-red-400/10"
-                  >
-                    <CloseIcon className="h-4 w-4" />
-                    停止
-                  </button>
-                )}
-                {(listingText.trim() || imagePlans.length > 0 || aPlusPlans.length > 0 || etsyListingDetails) && (
+                {(listingText.trim() || imagePlans.length > 0 || aPlusPlans.length > 0) && (
                   <button
                     type="button"
                     onClick={clearListingPlan}
@@ -2295,23 +2226,23 @@ export default function AmazonPlanner() {
               </div>
             </div>
             <div className="mt-3 rounded-[var(--ios-radius-md)] bg-[hsl(var(--ios-blue-tint))] px-3 py-2 text-xs leading-relaxed text-[hsl(var(--primary))]">
-              {isEtsyListingMode
-                ? '此页面只生成 Etsy Listing 文案，不生成图片。联网能力可用时会验证当前关键词与市场术语；不可用时会明确标注。'
-                 : isEtsyImageMode
-                     ? '原有10张与新增5张分别策划、分别显示；点击哪个按钮就只处理对应镜头。Phase 2 点击提交生成时才调用生图配置。'
+              {isEtsyUpgradedMode
+                ? '升级版逐张核对卖家事实与原始参考图；原有10张和新增5张独立策划，图片参数与生图质量设置保持一致。'
+                : isEtsyImageMode
+                  ? '原有10张与新增5张分别策划、分别显示；点击哪个按钮就只处理对应镜头。Phase 2 点击提交生成时才调用生图配置。'
                   : 'AI策划使用设置中的策划配置，生图配置保持不变。'}
             </div>
-            {isEtsyImageMode && isPlanning && planningEtsyShotGroup && etsyPlanningProgress && (
+            {isEtsyPhotoMode && isPlanning && planningEtsyShotGroup && etsyPlanningProgress && (
               <div role="status" aria-live="polite" className="mt-2 text-xs leading-relaxed text-[hsl(var(--primary))]">
                 {etsyPlanningProgress}
               </div>
             )}
             {plannerUsesOfficialDeepSeek && (
               <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-400/25 dark:bg-amber-400/10 dark:text-amber-100">
-                {isEtsyListingMode ? DEEPSEEK_ETSY_LISTING_NOTICE : DEEPSEEK_PLANNER_NOTICE}
+                {DEEPSEEK_PLANNER_NOTICE}
               </div>
             )}
-            {!isEtsyListingMode && plannerError && (
+            {plannerError && (
               <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs leading-relaxed text-red-800 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-200">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <span className="font-semibold">AI 策划失败详情</span>
@@ -2326,53 +2257,13 @@ export default function AmazonPlanner() {
                 <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed">{plannerError}</pre>
               </div>
             )}
-            {isEtsyListingMode && etsyListingError && (
-              <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs leading-relaxed text-red-800 dark:border-red-400/20 dark:bg-red-400/10 dark:text-red-200">
-                <div className="font-semibold">Etsy Listing 详情生成失败</div>
-                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed">{etsyListingError}</pre>
-              </div>
-            )}
           </div>
 
-          {isEtsyListingMode && etsyListingDetails && (
-            <div className="ios-group mt-5 overflow-hidden p-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">Etsy Listing 详情</div>
-                    <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${etsyListingDetails.researchStatus === 'web-verified' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-200' : 'bg-amber-100 text-amber-700 dark:bg-amber-400/10 dark:text-amber-200'}`}>
-                      {etsyListingDetails.researchStatus === 'web-verified' ? '已联网验证' : '未联网验证'}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    英文内容可直接整理发布；中文内容用于核对。发布前请确认所有标注的缺失规格。
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={copyEtsyListingDetails}
-                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 dark:border-white/[0.08] dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-white/[0.06]"
-                >
-                  <CopyIcon className="h-3.5 w-3.5" />
-                  复制全部
-                </button>
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-3">
-                <div className="rounded-lg bg-gray-100 px-3 py-2 text-gray-600 dark:bg-white/[0.05] dark:text-gray-300">标题 {Array.from(etsyListingDetails.titleEn).length}/140 字符</div>
-                <div className="rounded-lg bg-gray-100 px-3 py-2 text-gray-600 dark:bg-white/[0.05] dark:text-gray-300">Tags {etsyListingDetails.tags.length}/13</div>
-                <div className="col-span-2 rounded-lg bg-gray-100 px-3 py-2 text-gray-600 sm:col-span-1 dark:bg-white/[0.05] dark:text-gray-300">单个 Tag ≤ 20 字符</div>
-              </div>
-              <div className="mt-4 max-h-[720px] overflow-y-auto rounded-xl border border-gray-200 bg-white p-4 custom-scrollbar dark:border-white/[0.08] dark:bg-gray-950">
-                <MarkdownRenderer content={etsyListingMarkdown} className="text-sm leading-relaxed" />
-              </div>
-            </div>
-          )}
-
-          {isEtsyImageMode && etsyVisualDna && (
+          {isEtsyPhotoMode && etsyVisualDna && (
             <div className="ios-group mt-5 p-4">
               <div className="mb-3">
                 <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">PART A: VISUAL DNA ANALYSIS</div>
-                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">以下属性会作为锁定信息重复写入每一张 Etsy 生图提示词。</div>
+                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{isEtsyUpgradedMode ? '以下为 AI 初步识别；升级版会逐项与卖家描述和原始参考图校验，未确认的信息不会当作事实。' : '以下属性会作为锁定信息重复写入每一张 Etsy 生图提示词。'}</div>
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 {[
@@ -2390,11 +2281,11 @@ export default function AmazonPlanner() {
             </div>
           )}
 
-          {isEtsyImageMode && etsyPhotographyAnalysis && (
+          {isEtsyPhotoMode && etsyPhotographyAnalysis && (
             <div className="ios-group mt-5 p-4">
               <div className="mb-3">
                 <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">PART B: AI 摄影自动判断</div>
-                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">AI 已先分析产品，再为 15 张图分别选择角度、器材、参数、布光与场景。</div>
+                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{isEtsyUpgradedMode ? '摄影判断会优先遵循卖家事实与参考图证据，并为每张图独立选择角度、器材、参数、布光和场景。' : 'AI 已先分析产品，再为 15 张图分别选择角度、器材、参数、布光与场景。'}</div>
               </div>
               <dl className="divide-y divide-gray-200 text-xs dark:divide-white/[0.08]">
                 {[
@@ -2420,12 +2311,10 @@ export default function AmazonPlanner() {
                 <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">参考图</div>
                 <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
                   {inputImages.length > 0
-                    ? isEtsyListingMode
-                      ? `${inputImages.length}/${API_MAX_IMAGES} 张产品参考图，将用于识别可验证的外观与产品事实`
-                      : `${inputImages.length}/${API_MAX_IMAGES} 张产品参考图${usesStyleReferenceForActivePlan ? `；正式生成时另附 1 张隐藏风格参考图（实际 ${effectiveReferenceCount}/${API_MAX_IMAGES}）` : '，将随生成请求一起发送'}`
+                    ? `${inputImages.length}/${API_MAX_IMAGES} 张产品参考图${usesStyleReferenceForActivePlan ? `；正式生成时另附 1 张隐藏风格参考图（实际 ${effectiveReferenceCount}/${API_MAX_IMAGES}）` : '，将随生成请求一起发送'}`
                     : usesStyleReferenceForActivePlan
                       ? `未上传产品参考图；正式生成时会附 1 张隐藏风格参考图`
-                      : isEtsyListingMode ? '建议上传产品实拍、包装或规格参考图，帮助准确撰写详情' : '建议上传产品实拍、包装或结构参考图'}
+                      : '建议上传产品实拍、包装或结构参考图'}
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -2572,7 +2461,7 @@ export default function AmazonPlanner() {
                         placeholder="一行一个卖点，或用分号分隔"
                       />
                     </label>
-                    <label className={`ios-group-row bg-[hsl(var(--surface))] ${isEtsyListingMode ? 'md:col-span-2' : ''}`}>
+                    <label className="ios-group-row bg-[hsl(var(--surface))]">
                       <span className={LABEL_CLASS}>包装清单</span>
                       <textarea
                         value={draft.packageIncludes}
@@ -2581,29 +2470,27 @@ export default function AmazonPlanner() {
                         placeholder="例：1 mug, 1 lid, 1 straw"
                       />
                     </label>
-                    {!isEtsyListingMode && (
-                      <label className="ios-group-row bg-[hsl(var(--surface))]">
-                        <span className={LABEL_CLASS}>场景 / 构图</span>
-                        <textarea
-                          value={draft.scene}
-                          onChange={(event) => setDraft((current) => updateDraft(current, 'scene', event.target.value))}
-                          className={`${FIELD_CLASS} min-h-[76px] resize-y`}
-                          placeholder="例：白底产品构图 / 厨房台面场景 / 尺寸标注信息图"
-                        />
-                      </label>
-                    )}
+                    <label className="ios-group-row bg-[hsl(var(--surface))]">
+                      <span className={LABEL_CLASS}>场景 / 构图</span>
+                      <textarea
+                        value={draft.scene}
+                        onChange={(event) => setDraft((current) => updateDraft(current, 'scene', event.target.value))}
+                        className={`${FIELD_CLASS} min-h-[76px] resize-y`}
+                        placeholder="例：自然室内场景 / 局部工艺特写 / 克制的生活方式构图"
+                      />
+                    </label>
                   </div>
                 </section>
 
                 <section>
-                  <div className="ios-group-title">{isEtsyListingMode ? 'Publishing Guardrails' : 'Guardrails'}</div>
+                  <div className="ios-group-title">Guardrails</div>
                   <label className="ios-group ios-group-row block">
-                    <span className={LABEL_CLASS}>{isEtsyListingMode ? '禁止声明 / 待确认信息' : '禁用元素'}</span>
+                    <span className={LABEL_CLASS}>{isEtsyUpgradedMode ? '禁用元素 / 未确认事实' : '禁用元素'}</span>
                     <input
                       value={draft.forbidden}
                       onChange={(event) => setDraft((current) => updateDraft(current, 'forbidden', event.target.value))}
                       className={FIELD_CLASS}
-                      placeholder={isEtsyListingMode ? '例：不得声称 handmade；尺寸发布前需确认；不要承诺未经验证的性能' : '例：do not show phone, laptop, gift box'}
+                      placeholder={isEtsyUpgradedMode ? '例：不得推测木材种类；尺寸以卖家输入为准；do not show phone, laptop, gift box' : '例：do not show phone, laptop, gift box'}
                     />
                   </label>
                 </section>
@@ -2612,7 +2499,7 @@ export default function AmazonPlanner() {
           </div>
         </div>
 
-        {!isEtsyListingMode && <div className="p-4 sm:p-5">
+        <div className="p-4 sm:p-5">
           {showStickyActions && (
             <>
               {mobileActionDock && (
@@ -2776,7 +2663,7 @@ export default function AmazonPlanner() {
                 <div>
                   <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">视觉风格选择</div>
                   <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                    {isEtsyImageMode
+                    {isEtsyPhotoMode
                       ? 'Etsy 仅把所选预设转换为配色、光感与摄影质感，不会把带文字和版式的模板板附到生图请求。'
                       : '选择内置预设，或编辑后保存到“我的风格”。附图和 A+ 正式生图时会隐藏附加到请求末尾。'}
                   </div>
@@ -2998,7 +2885,7 @@ export default function AmazonPlanner() {
               )}
               {selectedStyleImage?.imageId && selectedStyleLabel && (
                 <div className="mt-3 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs leading-relaxed text-violet-800 dark:border-violet-300/20 dark:bg-violet-400/10 dark:text-violet-200">
-                  {isEtsyImageMode
+                  {isEtsyPhotoMode
                     ? `已选择「${selectedStyleLabel}」。将只用文字传递配色、光感与摄影质感，不附加模板图，避免占位文字、色条和信息框污染成品。`
                     : isMainListingPlan
                     ? `已选择「${selectedStyleLabel}」，但当前 MAIN 主图不会附加这张风格参考图；切换到附图或 A+ 时才会作为隐藏参考。`
@@ -3033,7 +2920,7 @@ export default function AmazonPlanner() {
               <div className={PLAN_LIST_CLASS}>
                 {imagePlans.map((plan, index) => {
                   const isSelected = selectedPlanIndex === index
-                  const planActionProgress = actionProgress[getPlannerActionKey(plannerMode, index, plan.slot)]
+                  const planActionProgress = actionProgress[getPlannerActionKey(workspaceMode, index, plan.slot)]
                   return (
                     <button
                       key={`${plan.slot}-${index}`}
@@ -3266,7 +3153,7 @@ export default function AmazonPlanner() {
               底部输入框已有内容，点击“填入”会用当前{plannerMode === 'etsy' ? 'Etsy镜头' : '亚马逊'}提示词覆盖。
             </div>
           )}
-        </div>}
+        </div>
       </div>
     </section>
     </>
