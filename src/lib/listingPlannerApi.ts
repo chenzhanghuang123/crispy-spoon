@@ -1076,7 +1076,9 @@ type EtsyDiversityPlan = { slot: string; photographyDecision?: EtsyPhotographyCa
 
 function inspectEtsyPhotographyDiversity(plans: EtsyDiversityPlan[]) {
   const classified = plans.filter((plan): plan is EtsyDiversityPlan & { photographyDecision: EtsyPhotographyCategories } => Boolean(plan.photographyDecision))
-  const partialMinimums = plans.length === ETSY_ORIGINAL_SHOT_COUNT ? [4, 3, 3, 3, 4] : [3, 3, 3, 3, 4]
+  const partialMinimums = plans.length < ETSY_ORIGINAL_SHOT_COUNT / 2
+    ? Array<number>(5).fill(plans.length)
+    : plans.length === ETSY_ORIGINAL_SHOT_COUNT ? [4, 3, 3, 3, 4] : [3, 3, 3, 3, 4]
   const minimums: Array<[EtsyPhotographyCategory, number, string]> = [
     ['angleFamily', plans.length === ETSY_SHOT_COUNT ? 5 : partialMinimums[0], '角度类型'],
     ['shotScale', plans.length === ETSY_SHOT_COUNT ? 4 : partialMinimums[1], '景别'],
@@ -1892,8 +1894,7 @@ async function repairEtsyShotDiversity(
     const plans = normalizeEtsyPlans(payload, stage.slots)
     const combined = mergeEtsyShotGroups(lockedPlans, plans)
     const scopes = [plans]
-    if ((combined.length === ETSY_ORIGINAL_SHOT_COUNT || combined.length === ETSY_SHOT_COUNT)
-      && combined.every((plan) => plan.photographyDecision)) scopes.push(combined)
+    if (combined.length > plans.length && combined.every((plan) => plan.photographyDecision)) scopes.push(combined)
     const reports = scopes.map(inspectEtsyPhotographyDiversity)
     const failures = reports.filter((report) => report.failures.length)
     if (!failures.length) return payload
@@ -2109,7 +2110,7 @@ async function callBatchedEtsyPlanner(options: {
         : 'This is the first half of a ten-shot campaign. Establish strong product-specific variety so the second half can complement it.'
       const productionOutputRule = 'Keep the complete English generation prompt and all 15 photographyDecision fields detailed; keep only the Chinese UI summary and shot-specific negative exclusions concise.'
       const groupSchema = createEtsyPlannerSchema(group, { conciseSummary: true })
-      const result = await runStage({
+      const groupStage: EtsyPlannerRequestStage = {
         name: groupLabel,
         slots: group,
         fullPlan: true,
@@ -2120,11 +2121,90 @@ async function callBatchedEtsyPlanner(options: {
           previous ? 'Keep the campaign-level fields identical: copy the supplied locked visualDna and photographyAnalysis into their required JSON fields; do not reanalyze them. Across the combined ten shots, use at least 4 angleFamily values, 3 shotScale values, 3 lensClass values, 3 lightingFamily values, and 4 sceneFamily values. Compare the actual scenes, views, framing, and buyer purposes against the first half, not just their category IDs.' : '',
         ].filter(Boolean).join('\n'),
         inputText: [options.buildInputText(group), lockContext, productionOutputRule].join('\n\n'),
-      }, (payload) => {
-        const normalized = normalizeEtsyPlannerApiPayload(payload, options.marketplaceId, options.fallbackTitle, group)
-        if (previous) assertEtsyPhotographyDiversity([...previous.plans, ...normalized.plans])
+      }
+      const validateGroup = (groupSlots: string[], lockedPlans: AmazonImagePlan[]) => (payload: PlannerApiPayload) => {
+        const normalized = normalizeEtsyPlannerApiPayload(payload, options.marketplaceId, options.fallbackTitle, groupSlots)
+        if (lockedPlans.length) assertEtsyPhotographyDiversity([...lockedPlans, ...normalized.plans])
         return normalized
-      }, previous?.plans ?? [])
+      }
+      let result: PlannerApiResult
+      try {
+        result = await runStage(groupStage, validateGroup(group, previous?.plans ?? []), previous?.plans ?? [])
+      } catch (error) {
+        const recoverableUpstreamFailure = error instanceof Error
+          && (/\bHTTP\s+524\b/i.test(error.message) || /流式响应中途结束/.test(error.message))
+        if (!recoverableUpstreamFailure) throw error
+
+        options.onProgress?.(`Etsy ${groupLabel}遇到上游超时或断流，保持完整摄影要求并自动拆分重试`)
+        const splitResults: PlannerApiResult[] = []
+        const runSplitStage = async (splitGroup: string[]): Promise<PlannerApiResult> => {
+          const lockedPlans = [...(previous?.plans ?? []), ...splitResults.flatMap((part) => part.plans)]
+          const campaign = previous ?? splitResults[0]
+          const splitContext = campaign
+            ? [
+              'Previously completed Etsy shots are locked. Create only the requested slots and make them complement every locked shot.',
+              `Locked shot assignments: ${JSON.stringify(lockedPlans.map((plan) => ({ slot: plan.slot, label: plan.label, planMarkdown: plan.planMarkdown, angleFamily: plan.photographyDecision?.angleFamily, angle: plan.photographyDecision?.angle, shotScale: plan.photographyDecision?.shotScale, framing: plan.photographyDecision?.framing, lensClass: plan.photographyDecision?.lensClass, lightingFamily: plan.photographyDecision?.lightingFamily, sceneFamily: plan.photographyDecision?.sceneFamily, scene: plan.photographyDecision?.scene })))}`,
+              `Locked campaign diagnosis: ${JSON.stringify({ visualDna: campaign.etsyVisualDna, photographyAnalysis: campaign.etsyPhotographyAnalysis })}`,
+              'Do not repeat locked scenes, viewpoints, compositions, or buyer purposes. Preserve exact product identity and the detailed photography quality requirements.',
+            ].join('\n')
+            : 'This is the first part of a ten-shot campaign. Establish product-specific variety and keep the requested shots complementary.'
+          const splitStage: EtsyPlannerRequestStage = {
+            name: `${groupLabel}拆分 ${splitGroup[0]}-${splitGroup[splitGroup.length - 1]}`,
+            slots: splitGroup,
+            fullPlan: true,
+            schema: createEtsyPlannerSchema(splitGroup, { conciseSummary: true }),
+            instructions: [
+              buildEtsyPlannerInstructions(options.baseDraft, { slots: splitGroup, partial: true }),
+              options.textOnlyReferenceGuard ? DEEPSEEK_TEXT_ONLY_PLANNER_GUARD : '',
+              campaign ? 'Copy the locked visualDna and photographyAnalysis into the required campaign fields without changing them. Ensure the combined campaign meets the stated diversity requirements.' : '',
+            ].filter(Boolean).join('\n'),
+            inputText: [options.buildInputText(splitGroup), splitContext, productionOutputRule].join('\n\n'),
+          }
+          try {
+            const splitResult = await runStage(
+              splitStage,
+              validateGroup(splitGroup, lockedPlans),
+              lockedPlans,
+            )
+            splitResults.push(splitResult)
+            return splitResult
+          } catch (splitError) {
+            const splitFailureIsRecoverable = splitError instanceof Error
+              && (/\bHTTP\s+524\b/i.test(splitError.message) || /流式响应中途结束/.test(splitError.message))
+            if (!splitFailureIsRecoverable) throw splitError
+            if (splitGroup.length === 1) {
+              options.onProgress?.(`Etsy ${splitStage.name}上游仍未完成，单镜头重试一次`)
+              const retried = await runStage(
+                splitStage,
+                validateGroup(splitGroup, lockedPlans),
+                lockedPlans,
+              )
+              splitResults.push(retried)
+              return retried
+            }
+
+            const splitAt = Math.ceil(splitGroup.length / 2)
+            const childResults: PlannerApiResult[] = []
+            for (const childGroup of [splitGroup.slice(0, splitAt), splitGroup.slice(splitAt)]) {
+              childResults.push(await runSplitStage(childGroup))
+            }
+            const splitPlans = childResults.flatMap((part) => part.plans)
+            assertEtsyPhotographyDiversity([...lockedPlans, ...splitPlans])
+            const basis = campaign ?? childResults[0]
+            if (!basis) throw new Error(`Etsy ${splitStage.name}拆分重试没有返回有效结果`)
+            return { ...basis, plans: splitPlans }
+          }
+        }
+
+        for (const splitGroup of [group.slice(0, 2), group.slice(2)]) {
+          await runSplitStage(splitGroup)
+        }
+        const campaign = previous ?? splitResults[0]
+        if (!campaign) throw new Error(`Etsy ${groupLabel}拆分重试没有返回有效结果`)
+        const splitPlans = splitResults.flatMap((part) => part.plans)
+        assertEtsyPhotographyDiversity([...(previous?.plans ?? []), ...splitPlans])
+        result = { ...campaign, plans: splitPlans }
+      }
       results.push(result)
       if (groupIndex === 0) {
         etsyOriginalCheckpoint = { key: options.checkpointKey, savedAt: Date.now(), result }

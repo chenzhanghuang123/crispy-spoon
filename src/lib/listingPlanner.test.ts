@@ -733,6 +733,101 @@ describe('callAmazonPlannerApi', () => {
     }
   })
 
+  it.each([
+    { failedBatch: 0, failure: 'HTTP 524' },
+    { failedBatch: 1, failure: 'HTTP 524' },
+    { failedBatch: 0, failure: 'truncated stream' },
+    { failedBatch: 1, failure: 'truncated stream' },
+  ])('recovers an original-ten $failure at five-shot batch $failedBatch with smaller full-quality batches', async ({ failedBatch, failure }) => {
+    const fullPayload = createEtsyPayload()
+    const requestedGroups: string[][] = []
+    const chatResponse = (payload: unknown) => new Response(JSON.stringify({
+      choices: [{ message: { role: 'assistant', content: JSON.stringify(payload) }, finish_reason: 'stop' }],
+    }), { headers: { 'Content-Type': 'application/json' } })
+    const fetchMock = vi.fn().mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init.body))
+      const systemPrompt = body.messages[0].content as string
+      const match = systemPrompt.match(/imagePlans must contain exactly (\d+) items in this order: (E\d+(?:, E\d+)*)\./)
+      const batchSlots = match?.[2].split(', ') ?? []
+      requestedGroups.push(batchSlots)
+      if (requestedGroups.length === failedBatch + 1) {
+        if (failure === 'truncated stream') {
+          return createPlannerStreamResponse([{ choices: [{ delta: { content: '{' } }] }], 'text/event-stream', false)
+        }
+        return new Response(JSON.stringify({ error: { message: 'upstream gateway timed out' } }), {
+          status: 524,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return chatResponse({ ...fullPayload, imagePlans: fullPayload.imagePlans.filter((plan) => batchSlots.includes(plan.slot)) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug with speckled stoneware and a raw clay foot.',
+      baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
+      mode: 'etsy',
+      etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'chat' }),
+    })
+
+    expect(requestedGroups).toEqual(failedBatch === 0
+      ? [['E01', 'E02', 'E03', 'E04', 'E05'], ['E01', 'E02'], ['E03', 'E04', 'E05'], ['E06', 'E07', 'E08', 'E09', 'E10']]
+      : [['E01', 'E02', 'E03', 'E04', 'E05'], ['E06', 'E07', 'E08', 'E09', 'E10'], ['E06', 'E07'], ['E08', 'E09', 'E10']])
+    expect(result.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(0, ETSY_ORIGINAL_SHOT_COUNT))
+    expect(result.plans.map((plan) => plan.prompt)).toEqual(fullPayload.imagePlans.slice(0, ETSY_ORIGINAL_SHOT_COUNT).map((plan) => plan.prompt))
+    for (const call of fetchMock.mock.calls.slice(1)) {
+      const request = JSON.parse(String(call[1]?.body))
+      expect(request.messages[0].content).toContain('photographyDecision must include productSuitability')
+      expect(request.messages[1].content).toContain('Keep the complete English generation prompt')
+    }
+  })
+
+  it('recursively reduces a repeatedly truncated Etsy batch to individual complete shots', async () => {
+    const fullPayload = createEtsyPayload()
+    const requestedGroups: string[][] = []
+    const chatResponse = (payload: unknown) => new Response(JSON.stringify({
+      choices: [{ message: { role: 'assistant', content: JSON.stringify(payload) }, finish_reason: 'stop' }],
+    }), { headers: { 'Content-Type': 'application/json' } })
+    const fetchMock = vi.fn().mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init.body))
+      const systemPrompt = body.messages[0].content as string
+      const match = systemPrompt.match(/imagePlans must contain exactly (\d+) items in this order: (E\d+(?:, E\d+)*)\./)
+      const batchSlots = match?.[2].split(', ') ?? []
+      requestedGroups.push(batchSlots)
+      if (requestedGroups.length === 1) {
+        return new Response(JSON.stringify({ error: { message: 'upstream gateway timed out' } }), {
+          status: 524,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (requestedGroups.length === 2) {
+        return createPlannerStreamResponse([{ choices: [{ delta: { content: '{' } }] }], 'text/event-stream', false)
+      }
+      return chatResponse({ ...fullPayload, imagePlans: fullPayload.imagePlans.filter((plan) => batchSlots.includes(plan.slot)) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug with speckled stoneware and a raw clay foot.',
+      baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
+      mode: 'etsy',
+      etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'chat' }),
+    })
+
+    expect(requestedGroups).toEqual([
+      ['E01', 'E02', 'E03', 'E04', 'E05'],
+      ['E01', 'E02'],
+      ['E01'],
+      ['E02'],
+      ['E03', 'E04', 'E05'],
+      ['E06', 'E07', 'E08', 'E09', 'E10'],
+    ])
+    expect(result.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(0, ETSY_ORIGINAL_SHOT_COUNT))
+    expect(result.plans.map((plan) => plan.prompt)).toEqual(fullPayload.imagePlans.slice(0, ETSY_ORIGINAL_SHOT_COUNT).map((plan) => plan.prompt))
+  })
+
   it.each(['chat', 'responses'] as const)('repairs all five category fields without rewriting original-ten photographs through %s', async (apiMode) => {
     const fullPayload = createEtsyPayload()
     fullPayload.imagePlans[0]!.photographyDecision.shotScale = 'full-product'
