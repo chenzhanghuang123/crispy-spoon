@@ -2023,6 +2023,18 @@ async function requestEtsyPlannerStage(options: {
   }
 }
 
+function isEtsyRequestFailure(error: unknown): error is Error {
+  return error instanceof Error
+    && /\bHTTP\s+500\b[\s\S]*\bupstream error:\s*do request failed\b/i.test(error.message)
+}
+
+function isRecoverableEtsyBatchFailure(error: unknown): error is Error {
+  return error instanceof Error
+    && (/\bHTTP\s+524\b/i.test(error.message)
+      || /流式响应中途结束/.test(error.message)
+      || isEtsyRequestFailure(error))
+}
+
 async function callBatchedEtsyPlanner(options: {
   baseDraft: AmazonPromptDraft
   buildInputText: (slots: string[]) => string
@@ -2134,11 +2146,9 @@ async function callBatchedEtsyPlanner(options: {
       try {
         result = await runStage(groupStage, validateGroup(group, previous?.plans ?? []), previous?.plans ?? [])
       } catch (error) {
-        const recoverableUpstreamFailure = error instanceof Error
-          && (/\bHTTP\s+524\b/i.test(error.message) || /流式响应中途结束/.test(error.message))
-        if (!recoverableUpstreamFailure) throw error
+        if (!isRecoverableEtsyBatchFailure(error)) throw error
 
-        options.onProgress?.(`Etsy ${groupLabel}遇到上游超时或断流，保持完整摄影要求并自动拆分重试`)
+        options.onProgress?.(`Etsy ${groupLabel}单次请求未完成，保持摄影要求和参考图，自动缩小批次重试`)
         const splitResults: PlannerApiResult[] = []
         const runSplitStage = async (splitGroup: string[]): Promise<PlannerApiResult> => {
           const lockedPlans = [...(previous?.plans ?? []), ...splitResults.flatMap((part) => part.plans)]
@@ -2172,10 +2182,11 @@ async function callBatchedEtsyPlanner(options: {
             splitResults.push(splitResult)
             return splitResult
           } catch (splitError) {
-            const splitFailureIsRecoverable = splitError instanceof Error
-              && (/\bHTTP\s+524\b/i.test(splitError.message) || /流式响应中途结束/.test(splitError.message))
-            if (!splitFailureIsRecoverable) throw splitError
+            if (!isRecoverableEtsyBatchFailure(splitError)) throw splitError
             if (splitGroup.length === 1) {
+              if (isEtsyRequestFailure(splitError)) {
+                throw new Error(`${splitError.message}\nEtsy ${splitStage.name}已缩小到单镜头；为避免重复提交相同请求，已停止自动重试。`)
+              }
               options.onProgress?.(`Etsy ${splitStage.name}上游仍未完成，单镜头重试一次`)
               const retried = await runStage(
                 splitStage,

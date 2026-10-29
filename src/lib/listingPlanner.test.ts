@@ -760,6 +760,8 @@ describe('callAmazonPlannerApi', () => {
   it.each([
     { failedBatch: 0, failure: 'HTTP 524' },
     { failedBatch: 1, failure: 'HTTP 524' },
+    { failedBatch: 0, failure: 'HTTP 500' },
+    { failedBatch: 1, failure: 'HTTP 500' },
     { failedBatch: 0, failure: 'truncated stream' },
     { failedBatch: 1, failure: 'truncated stream' },
   ])('recovers an original-ten $failure at five-shot batch $failedBatch with smaller full-quality batches', async ({ failedBatch, failure }) => {
@@ -777,6 +779,12 @@ describe('callAmazonPlannerApi', () => {
       if (requestedGroups.length === failedBatch + 1) {
         if (failure === 'truncated stream') {
           return createPlannerStreamResponse([{ choices: [{ delta: { content: '{' } }] }], 'text/event-stream', false)
+        }
+        if (failure === 'HTTP 500') {
+          return new Response(JSON.stringify({ error: { message: 'upstream error: do request failed (request id: test-request)' } }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          })
         }
         return new Response(JSON.stringify({ error: { message: 'upstream gateway timed out' } }), {
           status: 524,
@@ -805,6 +813,36 @@ describe('callAmazonPlannerApi', () => {
       expect(request.messages[0].content).toContain('photographyDecision must include productSuitability')
       expect(request.messages[1].content).toContain('Keep the complete English generation prompt')
     }
+  })
+
+  it('stops after a repeated single-shot Etsy upstream 500 instead of resending the same request', async () => {
+    const requestedGroups: string[][] = []
+    const fetchMock = vi.fn().mockImplementation((_url, init) => {
+      const body = JSON.parse(String(init.body))
+      const systemPrompt = body.messages[0].content as string
+      const match = systemPrompt.match(/imagePlans must contain exactly (\d+) items in this order: (E\d+(?:, E\d+)*)\./)
+      requestedGroups.push(match?.[2].split(', ') ?? [])
+      return new Response(JSON.stringify({ error: { message: 'upstream error: do request failed (request id: test-request)' } }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug with speckled stoneware and a raw clay foot.',
+      baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
+      mode: 'etsy',
+      etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'chat' }),
+    })).rejects.toThrow('Etsy 第一组 5 张拆分 E01-E01已缩小到单镜头')
+
+    expect(requestedGroups).toEqual([
+      ['E01', 'E02', 'E03', 'E04', 'E05'],
+      ['E01', 'E02'],
+      ['E01'],
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it('recursively reduces a repeatedly truncated Etsy batch to individual complete shots', async () => {
