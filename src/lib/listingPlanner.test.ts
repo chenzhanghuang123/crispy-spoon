@@ -757,6 +757,52 @@ describe('callAmazonPlannerApi', () => {
     }
   })
 
+  it('retries the same Etsy plan without streaming when the gateway returns an empty-stream error', async () => {
+    const fullPayload = createEtsyPayload()
+    const requests: Record<string, unknown>[] = []
+    const chatResponse = (payload: unknown) => new Response(JSON.stringify({
+      choices: [{ message: { role: 'assistant', content: JSON.stringify(payload) }, finish_reason: 'stop' }],
+    }), { headers: { 'Content-Type': 'application/json' } })
+    const fetchMock = vi.fn().mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>
+      requests.push(body)
+      if (requests.length === 1) {
+        return new Response(JSON.stringify({ error: { message: 'failed to stream request: empty response detected' } }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      const messages = body.messages as Array<{ content: string | Array<{ image_url?: { url?: string } }> }>
+      const systemPrompt = messages[0]?.content as string
+      const match = systemPrompt.match(/imagePlans must contain exactly 5 items in this order: (E\d+(?:, E\d+)*)\./)
+      const batchSlots = match?.[1].split(', ') ?? []
+      return chatResponse({ ...fullPayload, imagePlans: fullPayload.imagePlans.filter((plan) => batchSlots.includes(plan.slot)) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onProgress = vi.fn()
+
+    const result = await callAmazonPlannerApi({
+      listingText: 'Hand-thrown seafoam ceramic mug with speckled stoneware and a raw clay foot.',
+      baseDraft: { ...DEFAULT_AMAZON_PROMPT_DRAFT, productTitle: 'Hand-thrown Seafoam Ceramic Mug' },
+      referenceImageDataUrls: ['data:image/jpeg;base64,reference-image'],
+      mode: 'etsy',
+      etsyShotGroup: 'original',
+      profile: createDefaultOpenAIProfile({ baseUrl: 'https://api.example.com/v1', apiKey: 'test-key', apiMode: 'chat' }),
+      onProgress,
+    })
+
+    const withoutStream = (body: Record<string, unknown>) => Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'stream'))
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(requests[0]?.stream).toBe(true)
+    expect(requests[1]?.stream).toBe(false)
+    expect(withoutStream(requests[1]!)).toEqual(withoutStream(requests[0]!))
+    expect((requests[1]?.messages as Array<{ content: unknown }>)[1]?.content).toEqual((requests[0]?.messages as Array<{ content: unknown }>)[1]?.content)
+    expect(JSON.stringify(requests[1]?.messages)).toContain('data:image/jpeg;base64,reference-image')
+    expect(requests[2]?.stream).toBe(true)
+    expect(result.plans.map((plan) => plan.slot)).toEqual(getEtsyImageSlots().slice(0, ETSY_ORIGINAL_SHOT_COUNT))
+    expect(onProgress).toHaveBeenCalledWith('Etsy 第一组 5 张：流式响应为空，保持本次策划内容并改用普通响应重试')
+  })
+
   it.each([
     { failedBatch: 0, failure: 'HTTP 524' },
     { failedBatch: 1, failure: 'HTTP 524' },

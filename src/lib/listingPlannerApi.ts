@@ -285,6 +285,7 @@ interface EtsyPlannerRequestStage {
   inputText: string
   schema: object
   slots: string[]
+  disableStreaming?: boolean
   outline?: boolean
   fullPlan?: boolean
   categoryRepair?: boolean
@@ -2028,6 +2029,11 @@ function isEtsyRequestFailure(error: unknown): error is Error {
     && /\bHTTP\s+500\b[\s\S]*\bupstream error:\s*do request failed\b/i.test(error.message)
 }
 
+function isEmptyEtsyStreamFailure(error: unknown): error is Error {
+  return error instanceof Error
+    && /\bHTTP\s+500\b[\s\S]*failed to stream request:\s*empty response detected\b/i.test(error.message)
+}
+
 function isRecoverableEtsyBatchFailure(error: unknown): error is Error {
   return error instanceof Error
     && (/\bHTTP\s+524\b/i.test(error.message)
@@ -2065,7 +2071,7 @@ async function callBatchedEtsyPlanner(options: {
     let previousOutput = ''
     let validationError = ''
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = await requestStage({
+      const request = {
         ...stage,
         inputText: attempt === 0 ? stage.inputText : [
           stage.inputText,
@@ -2073,7 +2079,15 @@ async function callBatchedEtsyPlanner(options: {
           'Keep all verified product facts and valid shot categories. Correct the reported failure, preserving detailed photographic content unless it causes that failure. Return complete JSON for this stage only.',
           `Previous stage output: ${previousOutput}`,
         ].join('\n\n'),
-      })
+      }
+      let result: PlannerResponseTextResult
+      try {
+        result = await requestStage(request)
+      } catch (error) {
+        if (attempt !== 0 || stage.disableStreaming || !isEmptyEtsyStreamFailure(error)) throw error
+        options.onProgress?.(`Etsy ${stage.name}：流式响应为空，保持本次策划内容并改用普通响应重试`)
+        result = await requestStage({ ...request, disableStreaming: true })
+      }
       let payload: PlannerApiPayload
       try {
         payload = parsePlannerPayload(result.text)
@@ -2329,6 +2343,7 @@ export async function callAmazonPlannerApi(options: {
       : inputText)
     const requestReferenceImages = repair || stage?.categoryRepair ? [] : referenceImageDataUrls
     const requestSchema = stage?.schema ?? schema
+    const streamRequest = streamEtsyGroup && !stage?.disableStreaming
     const requestInstructions = stage?.instructions ?? buildPlannerInstructions(options.baseDraft, mode, aPlusType, {
       textOnlyReferenceGuard: isDeepSeekPlannerProfile,
       listingImageCount,
@@ -2376,7 +2391,7 @@ export async function callAmazonPlannerApi(options: {
                 },
               ],
               response_format: { type: 'json_object' },
-              stream: streamEtsyGroup,
+              stream: streamRequest,
             }
           : {
               model,
@@ -2390,7 +2405,7 @@ export async function callAmazonPlannerApi(options: {
                   schema: requestSchema,
                 },
               },
-              stream: streamEtsyGroup,
+              stream: streamRequest,
             },
         ),
       },
@@ -2434,7 +2449,7 @@ export async function callAmazonPlannerApi(options: {
           const message = await getApiErrorMessage(stageResponse)
           throw new Error(`HTTP ${stageResponse.status}: ${message}`)
         }
-        return readPlannerResponseText(stageResponse, true, onActivity)
+        return readPlannerResponseText(stageResponse, streamEtsyGroup && !stage.disableStreaming, onActivity)
       },
     })
   }
